@@ -76,14 +76,6 @@ enum class ConfigModeTools {
 	CMT_NUM_ENUMS,
 };
 
-enum class RGBDInputModeTools {
-	Pull = 0, //move rgbd_cam generated pointcloud to controller
-	ICP = 1, //run iterative closest point
-	Fuse = 2,//fuse with main point/world and regenerate lods
-	NUM_RGBD_TOOLS
-};
-
-
 enum class LabelOperation {
 	REPLACE = 0,
 	OR = 1,
@@ -132,7 +124,6 @@ enum point_attributes {
 enum pallete_tool {
 	PT_BRUSH = 0,
 	PT_SELECTION = 1,
-	PT_PASTE = 2,
 	NUM_PALLETE_TOOLS
 };
 
@@ -185,8 +176,6 @@ public:
 	void render_a_handhold_arrow(cgv::render::context& ctx, rgb c, float r);
 	/// creates a palette for label picking
 	void build_palette();
-	/// creates a palette for point cloud picking
-	void build_clipboard_palette();
 	/// draw a sphere on the right hand
 	void render_palette_sphere_on_rhand(cgv::render::context& ctx, const rgba& color);
 	/// enable or disable the palettes toolbar
@@ -547,7 +536,6 @@ private:
 
 	//config mode
 	int config_mode_tool = (int)ConfigModeTools::CMT_CLODParameters;
-	int rgbd_mode_tool = (int)RGBDInputModeTools::Pull;
 
 	//spacing tool parameters
 	vec3 last_measured_position = vec3(0);

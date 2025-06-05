@@ -74,24 +74,6 @@ namespace {
 #endif // #ifdef NDEBUG
 	}
 
-	std::array<std::string, 4> registration_tool_names = { "Pull","ICP","Fuse/Paste" };
-
-	std::string rgbd_input_help_text(const int mode, const point_cloud_registration_tool& tool) {
-		std::ostringstream text;
-		std::string ICP_text = mode != (int)RGBDInputModeTools::Pull && tool.registration_thread_is_busy() ? "(Processing...)" : " (Trigger)";
-		text << "[RGBD INPUT]\n"
-			<< "Mode: " << registration_tool_names[mode] << ICP_text << "\n"
-			<< "Selected point cloud: " << tool.get_name() << "\n"
-			//<< "Pointcloud " << tool.get_index() << "/" << tool.max_index() << " (Trackpad left/right)\n"
-			<< "-- Controls --\n"
-			<< "Grip Buttons: moving, rotating and scaling\n"
-			<< "(Controller 0)\n"
-			<< "Trackpad left/right: switch tool\n"
-			<< "(Controller 1)\n"
-			<< "Trackpad left/right: switch to rgbd_input/fill new slot\n"
-			<< "Menu Button: swap point cloud\n";
-		return text.str();
-	}
 	std::array<bool, NUM_OF_INTERACTIONS> interaction_mode_help_text_default_visibility = {false,true,true};
 
 	void tesselate_ray(const int edges, const float length, const float radius, std::vector<cgv::math::fvec<float, 3>>& container) {
@@ -204,7 +186,6 @@ pointcloud_labeling_tool::pointcloud_labeling_tool() : palette_clipboard_record_
 	curr_offset_rhand = initial_offset_rhand;
 	
 	build_palette();
-	build_clipboard_palette();
 	
 	picked_sphere_index = 0;
 	picked_label = (int32_t)point_label_group::DELETED;
@@ -472,7 +453,7 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 	point_server_ptr->swap_history(history_uptr);
 
 	palette.init(ctx);
-	rgbd_input_palette.init(ctx);
+	//rgbd_input_palette.init(ctx);
 
 	//ctx.set_bg_color(0.7, 0.7, 0.8, 1.0);
 	ctx.set_bg_color(1.0, 1.0, 1.0, 1.0);
@@ -528,7 +509,7 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 
 	//initialize palettes
 	palette.init_text_labels(ctx, vr_view_ptr);
-	rgbd_input_palette.init_text_labels(ctx, vr_view_ptr);
+	//rgbd_input_palette.init_text_labels(ctx, vr_view_ptr);
 
 	//add labels for controllers
 
@@ -756,7 +737,7 @@ void pointcloud_labeling_tool::clear(cgv::render::context& ctx)
 	point_server_ptr = nullptr;
 
 	palette.clear(ctx);
-	rgbd_input_palette.clear(ctx);
+	//rgbd_input_palette.clear(ctx);
 
 	world.clear(ctx);
 	box_shaped_selection.clear(ctx);
@@ -1484,26 +1465,6 @@ void pointcloud_labeling_tool::draw(cgv::render::context & ctx)
 				break;
 			}
 		}
-		else if (point_editing_tool == pallete_tool::PT_PASTE) {
-			auto* record = clipboard_ptr->get_by_id(palette_clipboard_record_id);
-
-			if (record != nullptr) {
-				ctx.push_modelview_matrix();
-
-				dmat4 model = record->model_matrix();
-				ctx.set_modelview_matrix(ctx.get_modelview_matrix() * model);
-				cgv::render::clod_point_renderer& cp_renderer = ref_clod_point_renderer(*get_context());
-
-				cp_renderer.enable(ctx);
-				cp_renderer.reduce_buffer_init(ctx, true);
-				cp_renderer.reduce_buffer(ctx, clipboard_paste_point_buffer, clipboard_paste_reduce_ids, 0, record->cached_lod_points.size());
-				cp_renderer.reduce_buffer_finish(ctx);
-				cp_renderer.draw_points(ctx);
-				cp_renderer.disable(ctx);
-
-				ctx.pop_modelview_matrix();
-			}
-		}
 		else if (point_editing_tool == pallete_tool::PT_SELECTION) {
 			//this is for copy selection
 			glDisable(GL_CULL_FACE);
@@ -1743,46 +1704,6 @@ void pointcloud_labeling_tool::build_palette()
 			update_controller_labels(); //need to update grip label since editing tool may have changed
 			break;
 		}
-		case vrui::POG_LEFT_TOOLBAR: {
-			//this is the left bar of the Palette on left controller
-			if (po.object_type() == PaletteObject::PO_SPHERE_FRAME) { // at the moment only the copy paste feature uses this shape 
-				auto* record_ptr = clipboard_ptr->get_by_id(palette_clipboard_record_id);
-				if (record_ptr) {
-					// set paste tool
-					point_selection_shape = selection_shape::SS_NONE;
-					point_editing_tool = pallete_tool::PT_PASTE;
-					paste_pointcloud_follow_controller = true;
-
-					record_ptr->translation = -record_ptr->scale*record_ptr->centroid + controller_poses[1].col(3)+curr_offset_rhand;
-					record_ptr->rotation = quat(1, 0, 0, 0);
-					//record_ptr->scale = 1.f;
-					auto& lod_points = record_ptr->lod_points();
-					// load data into buffers for rendering
-					glNamedBufferData(clipboard_paste_point_buffer, lod_points.size() * sizeof(LODPoint), lod_points.data(), GL_STATIC_DRAW);
-					glNamedBufferData(clipboard_paste_reduce_ids, lod_points.size() * sizeof(GLint),nullptr, GL_STATIC_DRAW);
-				}
-			}
-			else {
-				auto* plb_ptr = static_cast<point_label_brush*>(po.data()); //per object defined operation, shape, label
-				if (plb_ptr->operation != point_label_operation::NONE)
-					picked_label_operation = plb_ptr->operation;
-				if (plb_ptr->shape != selection_shape::SS_NONE)
-					point_selection_shape = plb_ptr->shape;
-				picked_label = plb_ptr->label;
-				picked_sphere_index = ix;
-				point_selection_color = default_point_selection_color;
-				if (plb_ptr->group_override) {
-					point_selection_group_mask = plb_ptr->point_groups;
-					point_selection_exclude_group_mask = plb_ptr->excluded_point_groups;
-				}
-				else {
-					point_selection_group_mask = default_point_selection_group_mask;
-					point_selection_exclude_group_mask = default_point_selection_exclude_group_mask;
-				}
-			}
-			update_controller_labels(); //need to update grip label, paste mode may be engaged or disengaged
-			break;
-		}
 		}
 	};
 	
@@ -1816,75 +1737,6 @@ void pointcloud_labeling_tool::build_palette()
 		}
 	}
 }
-
-void pointcloud_labeling_tool::build_clipboard_palette()
-{
-	static const rgba remove_color = rgba(0.501028, 0.51219, 0.540788, 1);
-	static const rgba remove_active_color = rgb8(212, 16, 16);
-
-	static constexpr int clipboard_palette_width = 5, clipboard_palette_height = 5;
-
-	//build rgbd_input palette
-	rgbd_input_palette.build(clipboard_palette_width, clipboard_palette_height);
-
-	//palette picking function
-	std::function<void(picked_object)> palette_picking_func = [this](picked_object po) {
-		int ix = po.id();
-		paste_pointcloud_follow_controller = false;
-		point_cloud_palette* palette_ptr = dynamic_cast<point_cloud_palette*>(po.get_palette_ptr());
-		if (palette_ptr) {
-
-			if (po.id() == rgbd_input_palette_delete_id) {
-				rgbd_input_palette_delete_mode = !rgbd_input_palette_delete_mode;
-				// change color of sphere
-				rgbd_input_palette.object_color(rgbd_input_palette_delete_id) = rgbd_input_palette_delete_mode ? remove_active_color : remove_color;
-				rgbd_input_palette.set_palette_changed();
-				return;
-			}
-
-			switch (po.object_group()) {
-			case vrui::POG_NONE: { // it's one of the 25 spheres from the center
-				point_cloud_palette_slot* s = palette_ptr->find_slot_by_index(po.id());
-				if (rgbd_input_palette_delete_mode) {
-					// remove
-					if (s->record_id != -1) {
-						clipboard_ptr->erase(s->record_id);
-						rgbd_input_palette_delete_mode = false;
-						rgbd_input_palette.object_color(rgbd_input_palette_delete_id) = rgbd_input_palette_delete_mode ? remove_active_color : remove_color;
-						rgbd_input_palette.set_palette_changed();
-					}
-				}
-				else { // set as registration / paste point cloud
-					point_cloud_registration.set_registration_pointcloud(s->record_id);
-					point_cloud_registration.set_index(point_cloud_registration_tool::registration_slot);
-					paste_pointcloud_follow_controller = true;
-					rgbd_input_palette.highlight(po.id());
-				}
-				break;
-			}
-			default:
-				return;
-			}
-		}
-	};
-
-
-	{// add delete to left toolbar
-		this->rgbd_input_palette_delete_id = rgbd_input_palette.add_object(vrui::PaletteObject::PO_SPHERE, vec3(-3.0 * rgbd_input_palette.step_width + rgbd_input_palette.toolbar_gap, 0.1, -5 * rgbd_input_palette.step_width), rgba(0.501028, 0.51219, 0.540788, 1), vrui::POG_LEFT_TOOLBAR);
-		rgbd_input_palette.set_label_text(rgbd_input_palette_delete_id, "remove\npoint cloud");
-	}
-
-
-	//add_left_sidebar(rgbd_input_palette, toolbar_gap, step_width);
-	// use defined lambda as function called by picking
-	rgbd_input_palette.set_function(palette_picking_func);
-	// set up as event listener for the clipboard
-	clipboard_ptr->register_event_listener(&rgbd_input_palette);
-	// set a size limit for the clipboard to match the point cloud palette's size
-	clipboard_ptr->limit_size(clipboard_palette_width*clipboard_palette_height);
-}
-
-
 
 /// (right vr controller) render the palette(only the sphere selection primitive)
 void pointcloud_labeling_tool::render_palette_sphere_on_rhand(cgv::render::context& ctx, const rgba& color) {
@@ -2104,39 +1956,6 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 								selection_touched_corner = i;
 								break;
 							}
-						}
-					}
-				}
-				else if (point_editing_tool == pallete_tool::PT_PASTE) {
-					if (paste_pointcloud_follow_controller && ci == 1) {
-						// rotate and translate clipboard pointcloud
-						vec3 movement = controller_poses[1].col(3) - vrpe.get_last_pose_matrix().col(3);
-						quat to = quat(mat3(3, 3, controller_poses[1].begin()));
-						quat from = quat(mat3(3, 3, vrpe.get_last_pose_matrix().begin()));
-						quat delta_rotation = to * from.conj();
-
-						auto* record_ptr = clipboard_ptr->get_by_id(palette_clipboard_record_id);
-						if (record_ptr) {
-							//float& scale = record_ptr->scale;
-							mat4 rotation = mat4(3, 3, record_ptr->rotation.get_matrix().begin());
-							//mat4 model = cgv::math::translate4(record_ptr->translation)* rotation * cgv::math::scale4(scale,scale,scale);
-							mat4 model = cgv::math::translate4(record_ptr->translation) * rotation;
-
-							mat4 linear_transform = cgv::math::translate4(controller_poses[1].col(3)) * delta_rotation.get_homogeneous_matrix() * cgv::math::translate4(-vrpe.get_last_pose_matrix().col(3)) * model;
-
-
-							mat3 final_rotation;
-							for (int j = 0; j < 3; ++j) {
-								for (int i = 0; i < 3; ++i) {
-									final_rotation(i, j) = linear_transform(i, j);
-								}
-								//final_rotation(j, j) /= scale;
-							}
-							quat point_cloud_rotation = quat(final_rotation);
-							vec4 point_cloud_translation = linear_transform.col(3);
-
-							record_ptr->rotation = point_cloud_rotation;
-							record_ptr->translation = point_cloud_translation;
 						}
 					}
 				}
@@ -2396,20 +2215,6 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 								}
 							}
 						}
-						else if (point_editing_tool == pallete_tool::PT_PASTE) {
-							if (vrke.get_controller_index() == 1 && chunked_points.num_chunks() > 0)
-							{
-								auto* record_ptr = clipboard_ptr->get_by_id(palette_clipboard_record_id);
-								if (record_ptr->points)
-								{
-									// paste pointcloud and disengage paste mode
-									auto model_mat = record_ptr->model_matrix();
-									point_server_ptr->fuse_point_cloud(*record_ptr->points, model_mat, true);
-									point_editing_tool = pallete_tool::PT_BRUSH;
-									update_controller_labels();
-								}
-							}
-						}
 						//palette_element_shapes[picked_sphere_index] = point_selection_shape != selection_shape::SS_NONE ? point_selection_shape : selection_shape::SS_SPHERE;
 						//update_palette();
 					}
@@ -2626,10 +2431,7 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 	auto& chunked_points = point_server_ptr->ref_chunks();
 
 	if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
-		if (point_editing_tool == pallete_tool::PT_PASTE) {
-			if (ci == 1)
-				paste_pointcloud_follow_controller = low_high; // make active copy paste pointcloud follow the controller if there was an low high transition
-		} else if (point_editing_tool == pallete_tool::PT_SELECTION) {
+		if (point_editing_tool == pallete_tool::PT_SELECTION) {
 			if (ci == 1) {
 				if (low_high) {
 					if (box_shaped_selection.phase() == box_selection_phase::NO_POINT_CONFIRMED) {
@@ -3134,11 +2936,6 @@ void pointcloud_labeling_tool::update_controller_labels()
 						}
 						break;
 					}
-					if (point_editing_tool == pallete_tool::PT_PASTE)
-					{
-						controller_labels[ci].set_active((controller_label_placement)p, paste_is_shown);
-					}
-					else
 					{
 						default_settings(ci, p);
 					}
