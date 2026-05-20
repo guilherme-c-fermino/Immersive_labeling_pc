@@ -205,6 +205,8 @@ pointcloud_labeling_tool::pointcloud_labeling_tool() : palette_clipboard_record_
 
 	//help text labels
 	li_help[0] = li_help[1] = -1;
+	box_is_active_labeling_variant = -1;
+	paste_mode_controller_label_variant_index = -1;
 	
 	share_reduction_pass = false;
 
@@ -226,6 +228,7 @@ pointcloud_labeling_tool::pointcloud_labeling_tool() : palette_clipboard_record_
 	poll_reduce_timer_data = poll_query_data = false;
 
 	paste_pointcloud_follow_controller = false;
+	palette_clipboard_point_cloud_id = -1;
 
 	static const std::unordered_map<unsigned, std::string> name_map;
 	static const std::unordered_map<unsigned, rgba> color_map;
@@ -639,6 +642,7 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 
 		controller_label_variants[1][InteractionMode::LABELING][CLP_MENU_BUTTON].push_back(
 			controller_labels[1].add_variant(CLP_MENU_BUTTON, "copy", controller_label_color));
+		box_is_active_labeling_variant = controller_labels[1].add_variant(CLP_MENU_BUTTON, "set label", controller_label_color);
 		controller_label_variants[0][InteractionMode::LABELING][CLP_MENU_BUTTON].push_back(
 			controller_labels[0].add_variant(CLP_MENU_BUTTON, "rollback", controller_label_color));
 	}
@@ -685,7 +689,7 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 			"Hold the sphere halfways into a surface and\n"
 			"press the trigger to measure the point spacing.\n"
 			"probe position: %f, %f, %f\n"
-			"point density: %f pnts/m²\n"
+			"point density: %f pnts/mï¿½\n"
 			"point spacing: %f m\n"
 			"l0 spacing:    %f m (required by the clod renderer)";
 		std::array<char, 512> buff;
@@ -774,7 +778,11 @@ void pointcloud_labeling_tool::init_frame(cgv::render::context& ctx)
 			if (li_help[ci] == -1)
 				continue;
 			// always_show_help can also be used for debugging
-			if (always_show_help || allways_show_controller_label[ci] || interaction_mode_help_text_default_visibility[interaction_mode]) {
+			// Safely check interaction_mode bounds before array access
+			bool show_by_default = (interaction_mode >= 0 && interaction_mode < (int)interaction_mode_help_text_default_visibility.size()) 
+				? interaction_mode_help_text_default_visibility[interaction_mode] 
+				: false;
+			if (always_show_help || allways_show_controller_label[ci] || show_by_default) {
 				text_labels.show_label(li_help[ci]);
 				continue;
 			}
@@ -2122,9 +2130,11 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				return true;
 			}
 			switch (vrke.get_key()) {
-				//left-hand menu key event: undo operation
-				//right-hand menu key event: selecting the second point of wireframe box, copy points; set scale corrected root level point spacing
+				// left-hand menu-equivalent key event: undo operation
+				// right-hand menu-equivalent key event: select second wireframe box point, copy points, apply spacing
+				// Oculus Touch face buttons are reported as VR_A by the abstraction layer.
 			case vr::VR_MENU:
+			case vr::VR_A:
 				if (vrke.get_controller_index() == 0)
 				{
 					rollback_last_operation(*get_context());
@@ -2312,28 +2322,34 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 
 	if (e.get_kind() == cgv::gui::EID_STICK) {
 		cgv::gui::vr_stick_event& vrse = static_cast<cgv::gui::vr_stick_event&>(e);
+		// Rearm vertical stick actions only after returning to neutral.
+		static int last_stick_y_direction[2] = { 0, 0 };
 		// left-hand controller: left-right touching event: adjusting size of selection primitive
+		//                       up-down touching event: change interaction mode
 		// right - hand controller : config mode : left - right touching : adjust point size
+		//                           up-down touching event: move tracking origin
 		if (vrse.get_controller_index() == 0)
 		{
 			if (vrse.get_action() == cgv::gui::SA_MOVE) {
 				//clamp to -1.0, 1.0
-				static constexpr float threshold = 0.40f;
-				//zero if sub threashold otherwise sign(vrse.get_y())*1.f
-				float factor = abs(vrse.get_x()) > threshold ? (cgv::math::sign(vrse.get_x()) >= 0 ? 1.f : -1.f) : 0;
+				static constexpr float horizontal_threshold = 0.40f;
+				static constexpr float vertical_threshold = 0.70f;
+				
+				// Horizontal (left-right) movement: adjust selection primitive size
+				float x_factor = abs(vrse.get_x()) > horizontal_threshold ? (cgv::math::sign(vrse.get_x()) >= 0 ? 1.f : -1.f) : 0;
 
 				selection_shape shape = selection_shape::SS_NONE;
 				if ((InteractionMode)interaction_mode == InteractionMode::LABELING){ 
 					shape = point_selection_shape;
 				}
-				if (factor != 0) {
+				if (x_factor != 0) {
 					switch (shape) {
 					case SS_SPHERE:
-						sphere_style_rhand.radius += factor * radius_adjust_step;
+						sphere_style_rhand.radius += x_factor * radius_adjust_step;
 						sphere_style_rhand.radius = std::max(0.f, sphere_style_rhand.radius);
 						break;
 					case SS_CUBOID:
-						cube_length += factor * radius_adjust_step;
+						cube_length += x_factor * radius_adjust_step;
 						cube_length = std::max(0.f, cube_length);
 						cube_rhand = box3(vec3(-cube_length, -cube_length, -cube_length), vec3(cube_length, cube_length, cube_length));
 						break;
@@ -2361,21 +2377,39 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 						}
 					}
 				}
+
+				// Vertical (up-down) movement: change interaction mode (edge-triggered)
+				int y_direction = abs(vrse.get_y()) > vertical_threshold ? (cgv::math::sign(vrse.get_y()) >= 0 ? 1 : -1) : 0;
+				if (y_direction == 0) {
+					last_stick_y_direction[0] = 0;
+				}
+				else if (y_direction != last_stick_y_direction[0]) {
+					int trackpad_direction = y_direction;  // +1 for up, -1 for down
+					interaction_mode = (interaction_mode + trackpad_direction) % (int)(NUM_OF_INTERACTIONS);
+					if (interaction_mode < 0)
+						interaction_mode = interaction_mode + (int)InteractionMode::NUM_OF_INTERACTIONS;
+					std::cout << "changed to interaction mode " << interaction_mode << std::endl;
+					update_interaction_mode((InteractionMode)interaction_mode);
+					last_stick_y_direction[0] = y_direction;
+				}
 			}
 		}
-		// config mode: adjust the CLOD factor
+		// config mode: adjust the CLOD factor; teleport movement via up-down joystick
 		if (vrse.get_controller_index() == 1)
 		{
 			if (vrse.get_action() == cgv::gui::SA_MOVE) {
+				static constexpr float horizontal_threshold = 0.40f;
+				static constexpr float vertical_threshold = 0.70f;
+				
+				// Horizontal (left-right) movement: adjust point size or CLOD factor
 				if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) 
 				{
 					if (config_mode_tool == (int)ConfigModeTools::CMT_PointSpacingProbe) 
 					{
 						// adjust primitive size in spacing probe mode
-						static constexpr float threshold = 0.40f;
 						//zero if sub threashold otherwise sign(vrse.get_y())*1.f
-						float factor = abs(vrse.get_x()) > threshold ? (cgv::math::sign(vrse.get_x()) >= 0 ? 1.f : -1.f) : 0;
-						sphere_style_rhand.radius += factor * radius_adjust_step;
+						float x_factor = abs(vrse.get_x()) > horizontal_threshold ? (cgv::math::sign(vrse.get_x()) >= 0 ? 1.f : -1.f) : 0;
+						sphere_style_rhand.radius += x_factor * radius_adjust_step;
 						sphere_style_rhand.radius = std::max(0.f, sphere_style_rhand.radius);
 					}
 					else if (config_mode_tool == (int)ConfigModeTools::CMT_CLODParameters) 
@@ -2395,8 +2429,21 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 							}
 						}
 					}
+				}
 
-
+				// Vertical (up-down) movement: move tracking origin (edge-triggered)
+				int y_direction = abs(vrse.get_y()) > vertical_threshold ? (cgv::math::sign(vrse.get_y()) >= 0 ? 1 : -1) : 0;
+				if (y_direction == 0) {
+					last_stick_y_direction[1] = 0;
+				}
+				else if (y_direction != last_stick_y_direction[1]) {
+					// Use the same approach as VR_DPAD_UP/DOWN handler
+					c_pos = vr_view_ptr->get_tracking_origin();
+					p.position = ori * vec3(0.0f, 0.0f, -y_direction * 1.0f) * 0.1f + c_pos;
+					p.color = rgb(1.0, 0.0, 0.0);
+					p.radius = 0.15f;
+					vr_view_ptr->set_tracking_origin(p.position);
+					last_stick_y_direction[1] = y_direction;
 				}
 			}
 		}
@@ -2902,9 +2949,17 @@ void pointcloud_labeling_tool::update_help_labels(const InteractionMode mode) {
 }
 void pointcloud_labeling_tool::update_controller_labels()
 {
-	auto default_settings = [this](int ci, int p) {
-		if (controller_label_variants[ci][interaction_mode][p].size() > 0) {
-			this->controller_labels[ci].set_active((controller_label_placement)p, controller_label_variants[ci][interaction_mode][p][0]);
+	// Validate interaction_mode bounds to prevent out-of-range access
+	int safe_interaction_mode = interaction_mode;
+	if (safe_interaction_mode < 0 || safe_interaction_mode >= (int)NUM_OF_INTERACTIONS) {
+		safe_interaction_mode = (int)InteractionMode::TELEPORT;
+		interaction_mode = safe_interaction_mode;
+	}
+
+	auto default_settings = [this, safe_interaction_mode](int ci, int p) {
+		if (safe_interaction_mode >= 0 && safe_interaction_mode < (int)NUM_OF_INTERACTIONS &&
+			controller_label_variants[ci][safe_interaction_mode][p].size() > 0) {
+			this->controller_labels[ci].set_active((controller_label_placement)p, controller_label_variants[ci][safe_interaction_mode][p][0]);
 		}
 		else {
 			this->controller_labels[ci].set_active((controller_label_placement)p, -1);
@@ -2914,7 +2969,7 @@ void pointcloud_labeling_tool::update_controller_labels()
 	//right controller's button labels
 	for (int ci = 0; ci < 2; ++ci) {
 		for (int p = 0; p < CLP_NUM_LABEL_PLACEMENTS; ++p) {
-			switch (interaction_mode) {
+			switch (safe_interaction_mode) {
 			case InteractionMode::LABELING: {
 				if (p == CLP_GRIP && ci == 1) {
 					/*if (point_editing_tool == pallete_tool::PT_PASTE) {
@@ -3825,19 +3880,28 @@ std::pair<std::vector<pointcloud_labeling_tool::LODPoint>, std::vector<GLuint>> 
 		auto& ch = i_v_pair.second;
 		//auto buf = result_buffers[ix];
 		GLuint* results = static_cast<GLuint*>(glMapNamedBufferRange(result_buffers[ix], 0, sizeof(GLuint) * (ch->size() + 1), GL_MAP_READ_BIT));
-		GLuint results_size = results[0]; ++results;
+		if (!results) {
+			glDeleteBuffers(1, &result_buffers[ix]);
+			continue;
+		}
 
-		//const unsigned old_tmp_size = tmp->get_nr_points();
-		const unsigned old_tmp_size = collected.first.size();
-		collected.first.resize(old_tmp_size + results_size);
-		collected.second.resize(old_tmp_size + results_size);
+		GLuint results_size = results[0];
+		++results;
 
-		auto& labels_ref = chunked_points.get_attribute(label_attribute_id);
+		const GLuint max_results = static_cast<GLuint>(ch->size());
+		if (results_size > max_results) {
+			std::cerr << "collect_points: clamping invalid results_size=" << results_size
+				<< " to chunk size=" << max_results << "\n";
+			results_size = max_results;
+		}
 
-		for (int i = 0; i < results_size; ++i) {
-			int local_ix = results[i];
-			collected.first[old_tmp_size + i] = ch->point_at(local_ix);
-			collected.second[old_tmp_size + i] = ch->id_at(local_ix);
+		for (GLuint i = 0; i < results_size; ++i) {
+			GLuint local_ix = results[i];
+			if (local_ix >= static_cast<GLuint>(ch->size())) {
+				continue;
+			}
+			collected.first.push_back(ch->point_at(static_cast<int>(local_ix)));
+			collected.second.push_back(ch->id_at(static_cast<int>(local_ix)));
 		}
 
 		glUnmapNamedBuffer(result_buffers[ix]);
@@ -3877,11 +3941,18 @@ void pointcloud_labeling_tool::move_points_to_clipboard(std::vector<LODPoint>& p
 	tmp->ref_point_cloud_position() = source_point_cloud.ref_point_cloud_position();
 	tmp->ref_point_cloud_rotation() = serv.ref_point_cloud_rotation();
 	int nr_points = tmp->get_nr_points();
+	const auto num_labels = static_cast<GLuint>(point_server_ptr->ref_chunks().num_points());
 	
 	for (int i = 0; i < nr_points;++i) {
 		tmp->pnt(i) = points[i].position();
 		tmp->clr(i) = points[i].color();
-		tmp->label(i) = make_label(remove_label_group(point_labels[point_ids[i]]), point_label_group::VISIBLE);
+		const GLuint point_id = point_ids[i];
+		if (point_id < num_labels) {
+			tmp->label(i) = make_label(remove_label_group(point_labels[point_id]), point_label_group::VISIBLE);
+		}
+		else {
+			tmp->label(i) = make_label(0, point_label_group::VISIBLE);
+		}
 	}
 	
 	//create a scaled preview
@@ -3892,8 +3963,10 @@ void pointcloud_labeling_tool::move_points_to_clipboard(std::vector<LODPoint>& p
 	//move lod points to clipboard 
 	pcr_ptr->cached_lod_points.swap(points);
 	
-	//store preview in palette
-	palette.replace_pointcloud(palette_clipboard_point_cloud_id, point_positions.data(), point_colors.data(), point_positions.size());
+	//store preview in palette only if the clipboard preview point cloud exists
+	if (palette_clipboard_point_cloud_id >= 0) {
+		palette.replace_pointcloud(palette_clipboard_point_cloud_id, point_positions.data(), point_colors.data(), point_positions.size());
+	}
 	//store selected points in clipboard
 	pcr_ptr->points.swap(tmp);
 	pcr_ptr->compute_centroid();
@@ -3931,11 +4004,18 @@ void pointcloud_labeling_tool::copy_points_to_clipboard(std::vector<LODPoint>& p
 	tmp->ref_point_cloud_position() = source_point_cloud.ref_point_cloud_position();
 	tmp->ref_point_cloud_rotation() = source_point_cloud.ref_point_cloud_rotation();
 	int nr_points = tmp->get_nr_points();
+	const auto num_labels = static_cast<GLuint>(point_server_ptr->ref_chunks().num_points());
 
 	for (int i = 0; i < nr_points; ++i) {
 		tmp->pnt(i) = points[i].position();
 		tmp->clr(i) = points[i].color();
-		tmp->label(i) = make_label(remove_label_group(point_labels[point_ids[i]]), point_label_group::VISIBLE);
+		const GLuint point_id = point_ids[i];
+		if (point_id < num_labels) {
+			tmp->label(i) = make_label(remove_label_group(point_labels[point_id]), point_label_group::VISIBLE);
+		}
+		else {
+			tmp->label(i) = make_label(0, point_label_group::VISIBLE);
+		}
 	}
 	
 	pcr_ptr->points.swap(tmp);
@@ -3947,8 +4027,10 @@ void pointcloud_labeling_tool::copy_points_to_clipboard(std::vector<LODPoint>& p
 
 	palette::generate_preview(*pcr_ptr->points, point_positions, point_colors);
 
-	//store preview in palette since the label palette has no event listener yet for the clipboard 
-	palette.replace_pointcloud(palette_clipboard_point_cloud_id, point_positions.data(), point_colors.data(), point_positions.size());
+	//store preview in palette only if the clipboard preview point cloud exists
+	if (palette_clipboard_point_cloud_id >= 0) {
+		palette.replace_pointcloud(palette_clipboard_point_cloud_id, point_positions.data(), point_colors.data(), point_positions.size());
+	}
 	try {
 		palette_clipboard_record_id = clipboard_ptr->move_from(pcr_ptr);
 	}
