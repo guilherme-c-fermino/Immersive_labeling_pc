@@ -1,4 +1,4 @@
-#include <cgv/base/base.h>
+﻿#include <cgv/base/base.h>
 #include "pointcloud_labeling_tool.h"
 #include <cgv_gl/gl/gl.h>
 #include <cgv/gui/file_dialog.h>
@@ -689,7 +689,7 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 			"Hold the sphere halfways into a surface and\n"
 			"press the trigger to measure the point spacing.\n"
 			"probe position: %f, %f, %f\n"
-			"point density: %f pnts/m�\n"
+			"point density: %f pnts/mï¿½\n"
 			"point spacing: %f m\n"
 			"l0 spacing:    %f m (required by the clod renderer)";
 		std::array<char, 512> buff;
@@ -2130,15 +2130,60 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				return true;
 			}
 			switch (vrke.get_key()) {
-				// left-hand menu-equivalent key event: undo operation
+				// left-hand menu-equivalent key event: undo operation (labeling mode)
 				// right-hand menu-equivalent key event: select second wireframe box point, copy points, apply spacing
-				// Oculus Touch face buttons are reported as VR_A by the abstraction layer.
+				// Keep left VR_A free for future functionality.
 			case vr::VR_MENU:
-			case vr::VR_A:
-				if (vrke.get_controller_index() == 0)
-				{
-					rollback_last_operation(*get_context());
+				if (vrke.get_controller_index() == 0) {
+					if ((InteractionMode)interaction_mode == InteractionMode::LABELING)
+						rollback_last_operation(*get_context());
 				}
+				if (vrke.get_controller_index() == 1)
+				{
+					if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
+						if (chunked_points.num_chunks() > 0) {
+							if (point_editing_tool == pallete_tool::PT_SELECTION) {
+								//the menu button can label points inside the box with the picked label, this is for the wireframe box selector
+								if (box_shaped_selection.phase() == box_selection_phase::SECOND_POINT_CONFIRMED)
+								{
+									point_server_ptr->ref_interaction_settings() = point_cloud_interaction_settings;
+									point_server_ptr->label_points_in_box(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, box_shaped_selection.box(), box_shaped_selection.translation(), box_shaped_selection.orientation(), point_label_operation::REPLACE);
+									if (point_cloud_interaction_settings.enable_history)
+										history_ptr->add_rollback_operation();
+								}
+							}
+							else {
+								// copy points
+								auto& collected = collect_points(*this->get_context(), (int)point_label_group::SELECTED_BIT);
+								auto& labels_ref = chunked_points.get_attribute(label_attribute_id);
+
+								move_points_to_clipboard(collected.first, collected.second, labels_ref.data<GLint>());
+								if (clear_selection_labels_after_copy) {
+									//clear labels by using the logical AND-operation on all points labels
+									point_server_ptr->label_all_points(~(GLint)point_label_group::SELECTED_BIT, (int32_t)point_label_group::SELECTED_BIT, 0, point_label_operation::AND);
+								}
+							}
+						}
+					}
+					else if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) {
+						//set scale corrected root level point spacing
+						if (last_measured_l0_spacing > 0.0 && last_measured_l0_spacing < std::numeric_limits<float>::infinity()) {
+							source_point_cloud.ref_render_style().spacing = last_measured_l0_spacing / source_point_cloud.ref_render_style().scale;
+							update_member(&source_point_cloud.ref_render_style().spacing);
+						}
+					}
+					else if ((InteractionMode)interaction_mode == InteractionMode::TELEPORT) {
+						//stores the pointclouds transformation state, restores on teleport
+						//stored_state.store_state(source_pc);
+						stored_state.first = point_server_ptr->get_transformation_state();
+						stored_state.second = source_point_cloud.ref_render_style();
+						overview_mode = true;
+						on_point_cloud_fit_table();
+						vr_view_ptr->set_tracking_origin(vec3(0.f, 0.f, 0.f));
+					}
+				}
+				break;
+			case vr::VR_A:
 				if (vrke.get_controller_index() == 1)
 				{
 					if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
@@ -2324,6 +2369,8 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 		cgv::gui::vr_stick_event& vrse = static_cast<cgv::gui::vr_stick_event&>(e);
 		// Rearm vertical stick actions only after returning to neutral.
 		static int last_stick_y_direction[2] = { 0, 0 };
+		// Rearm horizontal stick actions only after returning to neutral (right controller, labeling mode).
+		static int last_stick_x_direction_r = 0;
 		// left-hand controller: left-right touching event: adjusting size of selection primitive
 		//                       up-down touching event: change interaction mode
 		// right - hand controller : config mode : left - right touching : adjust point size
@@ -2431,6 +2478,43 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 					}
 				}
 
+				// Horizontal (left-right) movement in LABELING mode: cycle shape or toggle box constraint (edge-triggered)
+				if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
+					int x_direction = abs(vrse.get_x()) > horizontal_threshold ? (cgv::math::sign(vrse.get_x()) >= 0 ? 1 : -1) : 0;
+					if (x_direction == 0) {
+						last_stick_x_direction_r = 0;
+					}
+					else if (x_direction != last_stick_x_direction_r) {
+						int trackpad_direction = x_direction;
+						if (point_editing_tool == pallete_tool::PT_BRUSH) {
+							do {
+								point_selection_shape = (selection_shape)((point_selection_shape + trackpad_direction) % selection_shape::NUM_OF_SHAPES);
+								if (point_selection_shape < 0)
+									point_selection_shape = (selection_shape)(point_selection_shape + selection_shape::NUM_OF_SHAPES);
+							} while (selection_shape_blacklist.find(point_selection_shape) != selection_shape_blacklist.end());
+							assert(point_selection_shape > -1);
+						}
+						else if (point_editing_tool == pallete_tool::PT_SELECTION) {
+							if (trackpad_direction == -1) {
+								box_shaped_selection.clear_points();
+								if (box_shaped_selection_is_constraint)
+									point_server_ptr->clear_constraints();
+							}
+							else if (trackpad_direction == 1) {
+								box_shaped_selection_is_constraint = !box_shaped_selection_is_constraint;
+								update_controller_labels();
+								if (box_shaped_selection_is_constraint) {
+									point_server_ptr->set_constraint_box((GLint)point_label_group::PROTECTED_BIT, box_shaped_selection.box(), box_shaped_selection.translation(), box_shaped_selection.orientation(), true);
+								}
+								else {
+									point_server_ptr->clear_constraints();
+								}
+							}
+						}
+						last_stick_x_direction_r = x_direction;
+					}
+				}
+
 				// Vertical (up-down) movement: move tracking origin (edge-triggered)
 				int y_direction = abs(vrse.get_y()) > vertical_threshold ? (cgv::math::sign(vrse.get_y()) >= 0 ? 1 : -1) : 0;
 				if (y_direction == 0) {
@@ -2533,7 +2617,7 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 }
 
 void pointcloud_labeling_tool::on_registration_tool_load_point_cloud() {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 	auto* pc_ptr = point_cloud_registration.get_point_cloud();
@@ -2789,7 +2873,7 @@ void pointcloud_labeling_tool::test_moving_points()
 void pointcloud_labeling_tool::test_fill_clipboard()
 {
 	point_cloud tmp;
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;");
 	if (fn.empty())
 		return;
 
@@ -3177,7 +3261,7 @@ void pointcloud_labeling_tool::on_point_cloud_fit_table()
 
 void pointcloud_labeling_tool::on_add_point_cloud_to_clipboard()
 {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;");
 	if (fn.empty())
 		return;
 
@@ -3201,7 +3285,7 @@ void pointcloud_labeling_tool::on_add_point_cloud_to_clipboard()
 
 void pointcloud_labeling_tool::on_load_point_cloud_cb()
 {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3237,7 +3321,7 @@ void pointcloud_labeling_tool::on_load_point_cloud_cb()
 
 void pointcloud_labeling_tool::on_load_comparison_point_cloud_1_cb()
 {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3256,7 +3340,7 @@ void pointcloud_labeling_tool::on_load_comparison_point_cloud_1_cb()
 
 void pointcloud_labeling_tool::on_load_comparison_point_cloud_2_cb()
 {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3275,7 +3359,7 @@ void pointcloud_labeling_tool::on_load_comparison_point_cloud_2_cb()
 
 void pointcloud_labeling_tool::on_load_annotated_point_cloud_cb()
 {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3379,7 +3463,7 @@ void pointcloud_labeling_tool::on_clear_comparison_point_cloud_cb()
 
 void pointcloud_labeling_tool::on_load_ori_pc_cb()
 {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3398,7 +3482,7 @@ void pointcloud_labeling_tool::on_load_ori_pc_cb()
 
 void pointcloud_labeling_tool::on_load_anno_pcs_cb() 
 {
-	std::string directory_str = cgv::gui::directory_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string directory_str = cgv::gui::directory_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	std::vector<string> filelists;
 	getfilelist(directory_str, filelists);
 	point_cloud temp;
@@ -3461,7 +3545,7 @@ void pointcloud_labeling_tool::getfilelist(const std::string& dirpath, std::vect
 }
 
 void pointcloud_labeling_tool::on_load_CAD_cb() {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3471,7 +3555,7 @@ void pointcloud_labeling_tool::on_load_CAD_cb() {
 }
 
 void pointcloud_labeling_tool::on_load_scannet_gt_cb() {
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 }
@@ -3653,7 +3737,7 @@ void pointcloud_labeling_tool::on_generate_large_pc_cb()
 		large_pc.add_point(point);
 		large_pc.clr(i) = color;
 	}
-	std::string fn = cgv::gui::file_save_dialog("point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_save_dialog("point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -3661,7 +3745,7 @@ void pointcloud_labeling_tool::on_generate_large_pc_cb()
 }
 ///
 void pointcloud_labeling_tool::parallel_saving() {
-	std::string fn = cgv::gui::file_save_dialog("point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_save_dialog("point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 	source_point_cloud.write(fn);
@@ -4058,7 +4142,7 @@ void pointcloud_labeling_tool::on_copy_points() {
 void pointcloud_labeling_tool::on_load_clipboard_point_cloud()
 {
 	point_cloud tmp;
-	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;");
+	std::string fn = cgv::gui::file_open_dialog("source point cloud(*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd)", "Point cloud files:*.obj;*.pobj;*.ply;*.bpc;*.lpc;*.xyz;*.pct;*.points;*.wrl;*.apc;*.pnt;*.txt;*.las;*.pcd;");
 	if (fn.empty())
 		return;
 
@@ -4098,6 +4182,12 @@ void pointcloud_labeling_tool::on_load_clipboard_point_cloud()
 
 ///
 void pointcloud_labeling_tool::rollback_last_operation(cgv::render::context& ctx) {
+	// Avoid interleaving undo with an ongoing brush stroke on the right trigger.
+	if ((InteractionMode)interaction_mode == InteractionMode::LABELING && point_editing_tool == pallete_tool::PT_BRUSH) {
+		const vr::vr_kit_state* state_ptr = vr_view_ptr ? vr_view_ptr->get_current_vr_state() : nullptr;
+		if (state_ptr && (start_l || state_ptr->controller[1].axes[2] > 0.25f))
+			return;
+	}
 	if (point_cloud_interaction_settings.enable_history)
 		history_ptr->rollback_last_operation(ctx);
 }
