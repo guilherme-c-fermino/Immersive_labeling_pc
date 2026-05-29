@@ -11,6 +11,8 @@ enum selection_shape {
 	SS_PLANE = 2,
 	SS_CUBOID = 3,
 	SS_ALL = 4,
+	SS_CONE = 5,
+	SS_CYLINDER = 6,
 	NUM_OF_SHAPES
 };
 

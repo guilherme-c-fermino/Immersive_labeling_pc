@@ -238,6 +238,12 @@ namespace pct {
 		/// the make_label function creates the expected label format
 		void label_points_by_clipping(const GLint label, const GLint point_group_mask, const GLint exclude_point_group_mask, vec3 position, mat3 plane_ori, const bool invert = false, const point_label_operation operation = point_label_operation::REPLACE);
 
+		/// assigns labels to points inside the cone defined by apex position, height, and orientation
+		void label_points_in_cone(const GLint label, const GLint point_group_mask, const GLint exclude_point_group_mask, vec3 apex_position, float height, const quat& orientation, const point_label_operation operation = point_label_operation::REPLACE);
+
+		/// assigns labels to points inside the cylinder defined by base position, radius, height, and orientation
+		void label_points_in_cylinder(const GLint label, const GLint point_group_mask, const GLint exclude_point_group_mask, vec3 base_position, float radius, float height, const quat& orientation, const point_label_operation operation = point_label_operation::REPLACE);
+
 		/// applies label operation on all points
 		/// affects only labels where label & point_group_mask != 0 and label & exclude_point_group_mask == 0
 		/// the make_label function creates the expected label format

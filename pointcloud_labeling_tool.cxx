@@ -189,10 +189,15 @@ pointcloud_labeling_tool::pointcloud_labeling_tool() : palette_clipboard_record_
 	
 	picked_sphere_index = 0;
 	picked_label = (int32_t)point_label_group::DELETED;
+	picked_semantic_id = 0;
 	picked_label_operation = point_label_operation::REPLACE;
 	point_selection_shape = selection_shape::SS_SPHERE;
 	point_pushing_shape = selection_shape::SS_CUBOID;
 	point_editing_tool = pallete_tool::PT_BRUSH;
+
+	// Instance labeling defaults
+	instance_counter = 1;
+	instance_multiplier = 1000;
 
 	sphere_style_rhand.radius = 0.02f;
 	sphere_style_lhand.radius = 0.02f;
@@ -325,7 +330,8 @@ bool pointcloud_labeling_tool::self_reflect(cgv::reflect::reflection_handler & r
 		rh.reflect_member("point_editing_tool", point_editing_tool) &&
 		rh.reflect_member("show_teleport_ray", show_teleport_ray) &&
 		rh.reflect_member("visible_groups", visible_point_groups) &&
-		rh.reflect_member("clear_selection_labels_after_copy", clear_selection_labels_after_copy);
+		rh.reflect_member("clear_selection_labels_after_copy", clear_selection_labels_after_copy) &&
+		rh.reflect_member("instance_multiplier", instance_multiplier);
 }
 ///
 void pointcloud_labeling_tool::on_set(void * member_ptr)
@@ -704,6 +710,15 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 		text_labels.hide_label(spacing_tool_label_id);
 	}
 
+	{
+		instance_counter_label_id = text_labels.add_label(
+			"Instance: " + std::to_string(instance_counter),
+			tool_label_color);
+		text_labels.place_label(instance_counter_label_id,
+			left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+		text_labels.hide_label(instance_counter_label_id);
+	}
+
 	world.init(ctx);
 
 	box_shaped_selection.init(ctx);
@@ -767,6 +782,14 @@ void pointcloud_labeling_tool::init_frame(cgv::render::context& ctx)
 
 	if (interaction_mode == LABELING)
 		palette.init_frame(ctx);
+
+	// show/hide instance counter label based on mode
+	if (instance_counter_label_id != (uint32_t)-1) {
+		if (interaction_mode == LABELING)
+			text_labels.show_label(instance_counter_label_id);
+		else
+			text_labels.hide_label(instance_counter_label_id);
+	}
 
 	// update visibility of visibility changing labels
 	
@@ -934,6 +957,33 @@ void pointcloud_labeling_tool::draw(cgv::render::context & ctx)
 					active_label_prog->set_uniform(ctx, selection_color_location, point_selection_color);
 					break;
 				}
+				case SS_CONE: {
+					// Base (circle) at controller pointer tip, narrows outward
+					selection_center_in_world_space = (cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(0.0f)).lift();
+					selection_center_in_view_space = view_transform * selection_center_in_world_space;
+
+					active_label_prog = &shader_manager.get_clod_render_shader(ctx, SS_CONE, lighting);
+					vec4 cone_sphere = selection_center_in_world_space; cone_sphere.w() = cone_height;
+					vec4 cone_rot = vec4(cone_orientation_rhand.x(), cone_orientation_rhand.y(), cone_orientation_rhand.z(), cone_orientation_rhand.w());
+					active_label_prog->set_uniform(ctx, "selection_cone_sphere", cone_sphere, true);
+					active_label_prog->set_uniform(ctx, "selection_cone_rotation", cone_rot, true);
+					active_label_prog->set_uniform(ctx, selection_color_location, point_selection_color);
+					break;
+				}
+				case SS_CYLINDER: {
+					// Cylinder: nearest shell at pointer tip, center offset outward by radius
+					selection_center_in_world_space = (cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cylinder_radius)).lift();
+					selection_center_in_view_space = view_transform * selection_center_in_world_space;
+
+					active_label_prog = &shader_manager.get_clod_render_shader(ctx, SS_CYLINDER, lighting);
+					vec4 cyl_params = selection_center_in_world_space; cyl_params.w() = cylinder_radius;
+					vec4 cyl_rot = vec4(cylinder_orientation_rhand.x(), cylinder_orientation_rhand.y(), cylinder_orientation_rhand.z(), cylinder_orientation_rhand.w());
+					active_label_prog->set_uniform(ctx, "selection_cylinder_params", cyl_params, true);
+					active_label_prog->set_uniform(ctx, "selection_cylinder_height", cylinder_height, true);
+					active_label_prog->set_uniform(ctx, "selection_cylinder_rotation", cyl_rot, true);
+					active_label_prog->set_uniform(ctx, selection_color_location, point_selection_color);
+					break;
+				}
 				default:
 					selection_center_in_world_space = (cgv::math::pose_position(controller_poses[point_selection_hand]) + curr_offset_rhand).lift();
 					selection_center_in_view_space = view_transform * selection_center_in_world_space;
@@ -957,6 +1007,8 @@ void pointcloud_labeling_tool::draw(cgv::render::context & ctx)
 			active_label_prog->set_uniform(ctx, model_mat_loc, concat_mat_f);
 			active_label_prog->set_uniform(ctx, color_based_on_lods_loc, color_based_on_lod);
 			active_label_prog->set_uniform(ctx, visible_groups_loc, visible_point_groups);
+			active_label_prog->set_uniform(ctx, "instance_multiplier", (GLint)instance_multiplier);
+			active_label_prog->set_uniform(ctx, "show_instance_colors", show_instance_colors);
 		}
 
 		{	// draw point cloud
@@ -1471,6 +1523,12 @@ void pointcloud_labeling_tool::draw(cgv::render::context & ctx)
 			case SS_CUBOID:
 				render_palette_cube_on_rhand(ctx, color);
 				break;
+			case SS_CONE:
+				render_palette_cone_on_rhand(ctx, color);
+				break;
+			case SS_CYLINDER:
+				render_palette_cylinder_on_rhand(ctx, color);
+				break;
 			}
 		}
 		else if (point_editing_tool == pallete_tool::PT_SELECTION) {
@@ -1678,22 +1736,24 @@ void pointcloud_labeling_tool::build_palette()
 
 			switch (ix) {
 			case 0: //special label for deleted points
+				picked_semantic_id = 0;
 				picked_label = make_label(0, point_label_group::DELETED);
 				picked_label_operation = point_label_operation::REPLACE;
 				point_selection_color = PALETTE_COLOR_MAPPING[0];
 				break;
-			case 1: //default label
+			case 1: //default label (clear / unannotated)
+				picked_semantic_id = 0;
 				picked_label = make_label(0, point_label_group::VISIBLE);
 				picked_label_operation = point_label_operation::REPLACE;
 				point_selection_color = default_point_selection_color;
 				break;
 			default:
 			{
-				picked_label = make_label(ix - 1, point_label_group::VISIBLE);
+				picked_semantic_id = ix - 1;
 				picked_label_operation = point_label_operation::REPLACE;
-				//cgv::media::color<float, cgv::media::HLS, cgv::media::OPACITY> c = ix < PALETTE_COLOR_MAPPING.size() ? PALETTE_COLOR_MAPPING[ix] : default_point_selection_color;
-				//c.H() = std::fmodf(c.H() + 0.5f, 1.f);
 				point_selection_color = ix < PALETTE_COLOR_MAPPING.size() ? PALETTE_COLOR_MAPPING[ix] : default_point_selection_color;
+				// Compute label with instance encoding
+				recompute_instance_label();
 			}
 			}
 			break;
@@ -1797,6 +1857,57 @@ void pointcloud_labeling_tool::render_palette_cube_on_rhand(cgv::render::context
 			
 	cuber.set_color_array(ctx, &color, 1); // gray means out of range 
 	cuber.render(ctx, 0, 1);
+	glDisable(GL_BLEND);
+}
+/// (right vr controller) render the palette (cone selection primitive)
+void pointcloud_labeling_tool::render_palette_cone_on_rhand(cgv::render::context& ctx, const rgba& color) {
+	glDisable(GL_CULL_FACE);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	auto& cr = cgv::render::ref_cone_renderer(ctx);
+	cone_style_rhand.material.set_transparency(0.4);
+	cr.set_render_style(cone_style_rhand);
+	// Cone: base (circle) at controller pointer tip, narrows outward to apex
+	vec3 base_pos = cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(0.0f);
+	vec3 local_z(0, 0, -1); // -Z is outward from the hand
+	cone_orientation_rhand.rotate(local_z);
+	vec3 apex_pos = base_pos + local_z * cone_height;
+	// cone_renderer: base has radius = height/4 (pointy cone), apex has 0
+	std::array<vec3, 2> P = { base_pos, apex_pos };
+	std::array<float, 2> R = { cone_height * 0.25f, 0.0f }; // base radius=height/4 (diameter=height/2), tip=0
+	rgba col(color.R(), color.G(), color.B(), 0.4f);
+	std::array<rgba, 2> C = { col, col };
+	cr.set_position_array(ctx, P.data(), 2);
+	cr.set_radius_array(ctx, R.data(), 2);
+	cr.set_color_array(ctx, C.data(), 2);
+	cr.render(ctx, 0, 2);
+	glDisable(GL_BLEND);
+}
+/// (right vr controller) render the palette (cylinder selection primitive, sideways like paint roller)
+void pointcloud_labeling_tool::render_palette_cylinder_on_rhand(cgv::render::context& ctx, const rgba& color) {
+	glDisable(GL_CULL_FACE);
+	glEnable(GL_BLEND);
+	glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	auto& cr = cgv::render::ref_cone_renderer(ctx);
+	cylinder_style_rhand.material.set_transparency(0.4);
+	cr.set_render_style(cylinder_style_rhand);
+	// Cylinder: nearest surface (shell) at pointer tip, offset center outward by radius
+	vec3 center_pos = cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cylinder_radius);
+	// The cylinder axis is along local X of the controller (sideways, like a paint roller)
+	vec3 local_x(1, 0, 0);
+	quat controller_ori = cgv::math::pose_orientation(controller_poses[point_selection_hand]);
+	controller_ori.rotate(local_x);
+	vec3 left_pos = center_pos - local_x * (cylinder_height * 0.5f);
+	vec3 right_pos = center_pos + local_x * (cylinder_height * 0.5f);
+	// cone_renderer with equal radii = cylinder
+	std::array<vec3, 2> P = { left_pos, right_pos };
+	std::array<float, 2> R = { cylinder_radius, cylinder_radius };
+	rgba col(color.R(), color.G(), color.B(), 0.4f);
+	std::array<rgba, 2> C = { col, col };
+	cr.set_position_array(ctx, P.data(), 2);
+	cr.set_radius_array(ctx, R.data(), 2);
+	cr.set_color_array(ctx, C.data(), 2);
+	cr.render(ctx, 0, 2);
 	glDisable(GL_BLEND);
 }
 ///
@@ -1979,6 +2090,15 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				float cube_height = cube_rhand_flat ? cube_length * 0.125f : cube_length;
 				cube_rhand = box3(vec3(-cube_length, -cube_height, -cube_length), vec3(cube_length, cube_height, cube_length));
 				cube_orientation_rhand = cgv::math::pose_orientation(controller_poses[point_selection_hand]);
+				//CONE & CYLINDER
+				cone_orientation_rhand = cgv::math::pose_orientation(controller_poses[point_selection_hand]);
+				// Cylinder is sideways (paint roller): compose controller orientation with Z-to-X rotation
+				cylinder_orientation_rhand = cgv::math::pose_orientation(controller_poses[point_selection_hand]);
+				{
+					// Apply -90deg around Y so shader's +Z becomes controller's +X (sideways)
+					quat z_to_x_rot(vec3(0, 1, 0), -(float)HALF_PI);
+					cylinder_orientation_rhand *= z_to_x_rot;
+				}
 			}
 
 			/// repeating actions while the trigger is held
@@ -1987,7 +2107,11 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				if (state.controller[1].axes[2] > 0.25 || start_l) {
 					// label points if trigger is pressed
 					if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
-						if (point_editing_tool == pallete_tool::PT_BRUSH) {
+						if (point_editing_tool == pallete_tool::PT_BRUSH && check_instance_constraint()) {
+							// Register instance->semantic mapping if instance > 0 and semantic > 0
+							if (instance_counter > 0 && picked_semantic_id > 0)
+								instance_to_semantic[instance_counter] = picked_semantic_id;
+
 							cgv::render::context& ctx = *get_context();
 
 							std::chrono::steady_clock::time_point start_labeling, stop_labeling;
@@ -2008,12 +2132,23 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 								point_server_ptr->label_points_in_box(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
 									cube_rhand, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cube_rhand.get_extent().z()*0.5f), cube_orientation_rhand, picked_label_operation);
 								break;
+							case SS_CONE:
+								point_server_ptr->label_points_in_cone(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
+									cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(0.0f), cone_height, cone_orientation_rhand, picked_label_operation);
+								break;
+							case SS_CYLINDER:
+								point_server_ptr->label_points_in_cylinder(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
+									cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cylinder_radius), cylinder_radius, cylinder_height, cylinder_orientation_rhand, picked_label_operation);
+								break;
 							case SS_ALL:
+							{
 								//disable rollback for this operation
 								bool history_flag = point_cloud_interaction_settings.enable_history;
 								point_cloud_interaction_settings.enable_history = false;
 								point_server_ptr->label_all_points(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, picked_label_operation);
 								point_cloud_interaction_settings.enable_history = history_flag;
+								break;
+							}
 							}
 
 							stop_labeling = std::chrono::steady_clock::now();
@@ -2141,29 +2276,10 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				if (vrke.get_controller_index() == 1)
 				{
 					if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
-						if (chunked_points.num_chunks() > 0) {
-							if (point_editing_tool == pallete_tool::PT_SELECTION) {
-								//the menu button can label points inside the box with the picked label, this is for the wireframe box selector
-								if (box_shaped_selection.phase() == box_selection_phase::SECOND_POINT_CONFIRMED)
-								{
-									point_server_ptr->ref_interaction_settings() = point_cloud_interaction_settings;
-									point_server_ptr->label_points_in_box(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, box_shaped_selection.box(), box_shaped_selection.translation(), box_shaped_selection.orientation(), point_label_operation::REPLACE);
-									if (point_cloud_interaction_settings.enable_history)
-										history_ptr->add_rollback_operation();
-								}
-							}
-							else {
-								// copy points
-								auto& collected = collect_points(*this->get_context(), (int)point_label_group::SELECTED_BIT);
-								auto& labels_ref = chunked_points.get_attribute(label_attribute_id);
-
-								move_points_to_clipboard(collected.first, collected.second, labels_ref.data<GLint>());
-								if (clear_selection_labels_after_copy) {
-									//clear labels by using the logical AND-operation on all points labels
-									point_server_ptr->label_all_points(~(GLint)point_label_group::SELECTED_BIT, (int32_t)point_label_group::SELECTED_BIT, 0, point_label_operation::AND);
-								}
-							}
-						}
+						// Right B / VR_MENU in labeling mode: increase instance counter
+						instance_counter++;
+						recompute_instance_label();
+						std::cout << "Instance counter: " << instance_counter << std::endl;
 					}
 					else if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) {
 						//set scale corrected root level point spacing
@@ -2174,7 +2290,6 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 					}
 					else if ((InteractionMode)interaction_mode == InteractionMode::TELEPORT) {
 						//stores the pointclouds transformation state, restores on teleport
-						//stored_state.store_state(source_pc);
 						stored_state.first = point_server_ptr->get_transformation_state();
 						stored_state.second = source_point_cloud.ref_render_style();
 						overview_mode = true;
@@ -2184,32 +2299,29 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				}
 				break;
 			case vr::VR_A:
-				if (vrke.get_controller_index() == 1)
+				if (vrke.get_controller_index() == 0)
+				{
+					// Left A / VR_A: toggle instance color visualization
+					if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
+						show_instance_colors = !show_instance_colors;
+						// Update label to show VIS indicator
+						if (instance_counter_label_id != (uint32_t)-1) {
+							std::string text = "Instance: " + std::to_string(instance_counter);
+							if (show_instance_colors) text += " [VIS]";
+							text_labels.update_label_text(instance_counter_label_id, text);
+							text_labels.place_label(instance_counter_label_id,
+								left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+						}
+						std::cout << "Instance colors: " << (show_instance_colors ? "ON" : "OFF") << std::endl;
+					}
+				}
+				else if (vrke.get_controller_index() == 1)
 				{
 					if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
-						if (chunked_points.num_chunks() > 0) {
-							if (point_editing_tool == pallete_tool::PT_SELECTION) {
-								//the menu button can label points inside the box with the picked label, this is for the wireframe box selector
-								if (box_shaped_selection.phase() == box_selection_phase::SECOND_POINT_CONFIRMED)
-								{
-									point_server_ptr->ref_interaction_settings() = point_cloud_interaction_settings;
-									point_server_ptr->label_points_in_box(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, box_shaped_selection.box(), box_shaped_selection.translation(), box_shaped_selection.orientation(), point_label_operation::REPLACE);
-									if (point_cloud_interaction_settings.enable_history)
-										history_ptr->add_rollback_operation();
-								}
-							}
-							else {
-								// copy points
-								auto& collected = collect_points(*this->get_context(), (int)point_label_group::SELECTED_BIT);
-								auto& labels_ref = chunked_points.get_attribute(label_attribute_id);
-
-								move_points_to_clipboard(collected.first, collected.second, labels_ref.data<GLint>());
-								if (clear_selection_labels_after_copy) {
-									//clear labels by using the logical AND-operation on all points labels
-									point_server_ptr->label_all_points(~(GLint)point_label_group::SELECTED_BIT, (int32_t)point_label_group::SELECTED_BIT, 0, point_label_operation::AND);
-								}
-							}
-						}
+						// Right A / VR_A in labeling mode: decrease instance counter (min 0)
+						instance_counter = std::max(0, instance_counter - 1);
+						recompute_instance_label();
+						std::cout << "Instance counter: " << instance_counter << std::endl;
 					}
 					else if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) {
 						//set scale corrected root level point spacing
@@ -2220,7 +2332,6 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 					}
 					else if ((InteractionMode)interaction_mode == InteractionMode::TELEPORT) {
 						//stores the pointclouds transformation state, restores on teleport
-						//stored_state.store_state(source_pc);
 						stored_state.first = point_server_ptr->get_transformation_state();
 						stored_state.second = source_point_cloud.ref_render_style();
 						overview_mode = true;
@@ -2399,6 +2510,15 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 						cube_length += x_factor * radius_adjust_step;
 						cube_length = std::max(0.f, cube_length);
 						cube_rhand = box3(vec3(-cube_length, -cube_length, -cube_length), vec3(cube_length, cube_length, cube_length));
+						break;
+					case SS_CONE:
+						cone_height += x_factor * radius_adjust_step;
+						cone_height = std::max(0.005f, cone_height);
+						break;
+					case SS_CYLINDER:
+						cylinder_radius += x_factor * radius_adjust_step;
+						cylinder_radius = std::max(0.005f, cylinder_radius);
+						cylinder_height = cylinder_radius * 3.0f; // maintain aspect ratio
 						break;
 					case SS_PLANE:
 						//nothing to do here
@@ -3013,6 +3133,39 @@ void pointcloud_labeling_tool::push_points(cgv::render::context& ctx, const sele
 void pointcloud_labeling_tool::on_rollback_cb() {
 	rollback_last_operation(*get_context());
 }
+
+void pointcloud_labeling_tool::recompute_instance_label() {
+	// Combine instance and semantic into the label value
+	// instance 0 means "no instance" → just use semantic_id directly
+	int combined_id = (instance_counter == 0) ? picked_semantic_id : (instance_counter * instance_multiplier + picked_semantic_id);
+	picked_label = make_label(combined_id, point_label_group::VISIBLE);
+	// Update the instance counter display if available
+	if (instance_counter_label_id != (uint32_t)-1) {
+		std::string text = "Instance: " + std::to_string(instance_counter);
+		if (show_instance_colors) text += " [VIS]";
+		text_labels.update_label_text(instance_counter_label_id, text);
+		text_labels.place_label(instance_counter_label_id,
+			left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+	}
+}
+
+bool pointcloud_labeling_tool::check_instance_constraint() const {
+	// Instance 0 means "no instance annotation" - always allowed
+	if (instance_counter == 0)
+		return true;
+	// Special labels (delete/default with semantic_id <= 0) bypass constraint
+	if (picked_semantic_id <= 0)
+		return true;
+	auto it = instance_to_semantic.find(instance_counter);
+	if (it != instance_to_semantic.end() && it->second != picked_semantic_id) {
+		std::cout << "[Instance Constraint] Instance " << instance_counter
+			<< " is already tied to semantic label " << it->second
+			<< ". Cannot paint with semantic " << picked_semantic_id << ".\n";
+		return false;
+	}
+	return true;
+}
+
 ///
 void pointcloud_labeling_tool::stream_help(std::ostream & os)
 {
@@ -4567,6 +4720,7 @@ void pointcloud_labeling_tool::create_gui()
 	connect_copy(add_button("load s3d labels", "tooltip='read labels from a file'")->click, rebind(this, &pointcloud_labeling_tool::on_load_s3d_labels_cb));
 	connect_copy(add_button("store s3d labels", "tooltip='write labels line wise as ASCII text to a file'")->click, rebind(this, &pointcloud_labeling_tool::on_store_s3d_labels_cb));
 	connect_copy(add_button("load label palette", "tooltip='load different palette labels and colors'")->click, rebind(this, &pointcloud_labeling_tool::on_load_palette_labels));
+	add_member_control(this, "instance_multiplier", instance_multiplier, "value_slider", "min=100;max=10000;log=true;ticks=true");
 	connect_copy(add_button("random lpc", "tooltip='create a random cube shaped point cloud'")->click, rebind(this, &pointcloud_labeling_tool::on_generate_large_pc_cb));
 
 	add_member_control(this, "adapt CLOD", adapt_clod, "check",

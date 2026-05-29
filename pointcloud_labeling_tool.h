@@ -184,6 +184,10 @@ public:
 	void render_palette_plane_on_rhand(cgv::render::context& ctx, const rgba& color);
 	/// draw a cube on the right hand
 	void render_palette_cube_on_rhand(cgv::render::context& ctx, const rgba& color);
+	/// draw a cone on the right hand
+	void render_palette_cone_on_rhand(cgv::render::context& ctx, const rgba& color);
+	/// draw a cylinder on the right hand
+	void render_palette_cylinder_on_rhand(cgv::render::context& ctx, const rgba& color);
 	
 	///
 	void clear(cgv::render::context& ctx) override;
@@ -637,6 +641,17 @@ private:
 	/// selection plane orientation (rotate vec3(1,0,0) for the normal)
 	quat plane_orientation_rhand;
 	bool plane_invert_selection;
+
+	// cone definition (equilateral: height == base_radius)
+	float cone_height = 0.04f;
+	quat cone_orientation_rhand;
+	cgv::render::cone_render_style cone_style_rhand;
+
+	// cylinder definition
+	float cylinder_radius = 0.02f;
+	float cylinder_height = 0.06f;
+	quat cylinder_orientation_rhand;
+	cgv::render::cone_render_style cylinder_style_rhand;
 	
 	
 	std::vector<rgba> PALETTE_COLOR_MAPPING; //palette element colors, includes label colors beginning at offset 1 
@@ -649,9 +664,22 @@ private:
 	//picked_sphere_index means the index of sphere that is rendered on left hand
 	int picked_sphere_index;
 	int picked_label;
+	int picked_semantic_id = 0; ///< raw semantic palette index (without instance encoding)
 	point_label_operation picked_label_operation;
 	pallete_tool point_editing_tool; //currently active tool in labeling mode
 	selection_shape point_selection_shape; //tool shape for point label brush
+
+	// --- Instance labeling ---
+	int instance_counter = 1;        ///< current instance id (0 = no instance / unannotated)
+	int instance_multiplier = 1000;  ///< multiplier separating instance from semantic (label = instance*multiplier + semantic)
+	bool show_instance_colors = false; ///< toggle per-instance color visualization
+	/// maps instance_id -> semantic_id to enforce one-semantic-per-instance constraint
+	std::unordered_map<int, int> instance_to_semantic;
+	uint32_t instance_counter_label_id = (uint32_t)-1; ///< text label handle for palette display
+	/// recompute picked_label from instance_counter, picked_semantic_id and current group
+	void recompute_instance_label();
+	/// check instance-to-semantic constraint, returns true if painting is allowed
+	bool check_instance_constraint() const;
 	selection_shape point_pushing_shape;
 	/// store shapes here that must not be used to push points
 	std::set<selection_shape> pushing_shape_blacklist;

@@ -64,6 +64,10 @@ layout(std430, binding = 5) restrict readonly buffer ssNormalsBuffer{
 
 uniform vec4 selected_label_color = vec4(1.0,0.0,0.0,1.0);
 
+uniform int instance_multiplier = 1000;
+
+uniform bool show_instance_colors = false;
+
 uniform mat4 model_view_projection;
 layout(location = 1) uniform mat4 model_mat;
 
@@ -75,6 +79,13 @@ layout(location = 1) uniform mat4 model_mat;
 //convert index to color for debugging
 vec4 index_to_color(uint index) {
 	return vec4(float(index & 255) / 255.0,float(index & 0xFF00)/65535.0,float(index & 0xFF0000)/16777215.0,1.0);
+}
+
+// HSV to RGB conversion (h,s,v all in [0,1])
+vec3 hsv2rgb(float h, float s, float v) {
+	vec3 c = vec3(h, s, v);
+	vec3 rgb = clamp(abs(mod(c.x * 6.0 + vec3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0, 0.0, 1.0);
+	return c.z * mix(vec3(1.0), rgb, c.y);
 }	
 
 void main()
@@ -84,9 +95,24 @@ void main()
 	label_gs = label;
 			
 	int label_without_group = label >> POINT_GROUP_BITS;
+	int semantic_id = (instance_multiplier > 0) ? (label_without_group % instance_multiplier) : label_without_group;
 	
 	float label_color_factor = float(label_without_group > 0);
-	color_gs = mix(vec4(color.rgb,1.0),label_color_map[label_without_group & 31], label_color_factor);
+
+	if (show_instance_colors && label_without_group > 0) {
+		int instance_id = (instance_multiplier > 0) ? (label_without_group / instance_multiplier) : 0;
+		if (instance_id > 0) {
+			// Golden ratio hue spacing for maximum visual distinction
+			float hue = fract(float(instance_id) * 0.618033988);
+			vec3 instance_rgb = hsv2rgb(hue, 0.8, 0.9);
+			color_gs = vec4(instance_rgb, 1.0);
+		} else {
+			// instance_id == 0 means semantic-only, show semantic color
+			color_gs = mix(vec4(color.rgb, 1.0), label_color_map[semantic_id & 31], label_color_factor);
+		}
+	} else {
+		color_gs = mix(vec4(color.rgb, 1.0), label_color_map[semantic_id & 31], label_color_factor);
+	}
 	
 	apply_vertex_color_effects(color, color_gs);
 	

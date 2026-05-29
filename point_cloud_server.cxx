@@ -827,6 +827,139 @@ void pct::point_cloud_server::label_points_by_clipping(const GLint label, const 
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
+void pct::point_cloud_server::label_points_in_cone(const GLint label, const GLint point_group_mask, const GLint exclude_point_group_mask, vec3 apex_position, float height, const quat& orientation, const point_label_operation operation) {
+	constexpr int points_pos = 1, index_pos = 2, labels_pos = 6, point_id_pos = 4;
+
+	if (label_attribute_id == -1)
+		return;
+
+	auto& label_shaders = ref_label_shader_manager(*ctx_ptr);
+	cgv::render::shader_program& labeling_tool_prog = label_shaders.get_labeling_tool(SS_CONE);
+
+	dmat4 concat_trans = get_point_cloud_model_transform();
+	mat4 float_trans_matrix = concat_trans;
+
+	auto& chunked_points = ref_chunks();
+	std::vector<std::pair<const ivec3, chunk<LODPoint>*>> chunks;
+
+	if (interaction_settings.use_chunks) {
+		// Use sphere intersection as conservative approximation
+		float scaled_radius = height / ref_point_cloud_scale();
+		vec4 position_in_model_space = inv(concat_trans) * dvec4(apex_position.lift());
+		vec3 pos3 = vec3(position_in_model_space.x(), position_in_model_space.y(), position_in_model_space.z());
+		chunked_points.intersect_sphere(pos3, scaled_radius, chunks);
+	} else {
+		chunked_points.get_all(chunks);
+	}
+
+	vec4 cone_sphere = apex_position.lift();
+	cone_sphere.w() = height;
+	vec4 cone_rot = vec4(orientation.x(), orientation.y(), orientation.z(), orientation.w());
+
+	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_cone_sphere", cone_sphere, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_cone_rotation", cone_rot, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "point_label", label, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "model_transform", float_trans_matrix, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "point_groups", point_group_mask & (int32_t)point_label_group::GROUP_MASK);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "exclude_point_groups", exclude_point_group_mask & (int32_t)point_label_group::GROUP_MASK);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)operation);
+
+	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
+
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, labels_pos, chunked_points.get_attribute(label_attribute_id).buffer_name());
+
+	if (history_ptr && interaction_settings.enable_history)
+		history_ptr->bind(*ctx_ptr);
+
+	labeling_tool_prog.enable(*ctx_ptr);
+	if (gpu_timers_enabled)
+		labeling_stopwatch.start_gpu_timer();
+
+	for (auto& chunk_index_pair : chunks) {
+		auto& ch = *(chunk_index_pair.second);
+		if (ch.size() > 0) {
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, point_id_pos, ch.id_buffer());
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, points_pos, ch.point_buffer());
+			labeling_tool_prog.set_uniform(*ctx_ptr, "batch_size", (GLint)ch.size(), true);
+			labeling_tool_prog.set_uniform(*ctx_ptr, "batch_offset", (GLint)0, true);
+			glDispatchCompute((ch.size() / 128) + 1, 1, 1);
+		}
+	}
+
+	glMemoryBarrier(GL_ALL_BARRIER_BITS);
+	if (gpu_timers_enabled)
+		labeling_stopwatch.stop_gpu_timer();
+	labeling_tool_prog.disable(*ctx_ptr);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+void pct::point_cloud_server::label_points_in_cylinder(const GLint label, const GLint point_group_mask, const GLint exclude_point_group_mask, vec3 base_position, float radius, float height, const quat& orientation, const point_label_operation operation) {
+	constexpr int points_pos = 1, index_pos = 2, labels_pos = 6, point_id_pos = 4;
+
+	if (label_attribute_id == -1)
+		return;
+
+	auto& label_shaders = ref_label_shader_manager(*ctx_ptr);
+	cgv::render::shader_program& labeling_tool_prog = label_shaders.get_labeling_tool(SS_CYLINDER);
+
+	dmat4 concat_trans = get_point_cloud_model_transform();
+	mat4 float_trans_matrix = concat_trans;
+
+	auto& chunked_points = ref_chunks();
+	std::vector<std::pair<const ivec3, chunk<LODPoint>*>> chunks;
+
+	if (interaction_settings.use_chunks) {
+		float bounding_radius = std::max(radius, height * 0.5f);
+		float scaled_radius = bounding_radius / ref_point_cloud_scale();
+		vec4 position_in_model_space = inv(concat_trans) * dvec4(base_position.lift());
+		vec3 pos3 = vec3(position_in_model_space.x(), position_in_model_space.y(), position_in_model_space.z());
+		chunked_points.intersect_sphere(pos3, scaled_radius, chunks);
+	} else {
+		chunked_points.get_all(chunks);
+	}
+
+	vec4 cyl_params = base_position.lift();
+	cyl_params.w() = radius;
+	vec4 cyl_rot = vec4(orientation.x(), orientation.y(), orientation.z(), orientation.w());
+
+	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_cylinder_params", cyl_params, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_cylinder_height", height, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_cylinder_rotation", cyl_rot, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "point_label", label, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "model_transform", float_trans_matrix, true);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "point_groups", point_group_mask & (int32_t)point_label_group::GROUP_MASK);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "exclude_point_groups", exclude_point_group_mask & (int32_t)point_label_group::GROUP_MASK);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)operation);
+
+	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
+
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, labels_pos, chunked_points.get_attribute(label_attribute_id).buffer_name());
+
+	if (history_ptr && interaction_settings.enable_history)
+		history_ptr->bind(*ctx_ptr);
+
+	labeling_tool_prog.enable(*ctx_ptr);
+	if (gpu_timers_enabled)
+		labeling_stopwatch.start_gpu_timer();
+
+	for (auto& chunk_index_pair : chunks) {
+		auto& ch = *(chunk_index_pair.second);
+		if (ch.size() > 0) {
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, point_id_pos, ch.id_buffer());
+			glBindBufferBase(GL_SHADER_STORAGE_BUFFER, points_pos, ch.point_buffer());
+			labeling_tool_prog.set_uniform(*ctx_ptr, "batch_size", (GLint)ch.size(), true);
+			labeling_tool_prog.set_uniform(*ctx_ptr, "batch_offset", (GLint)0, true);
+			glDispatchCompute((ch.size() / 128) + 1, 1, 1);
+		}
+	}
+
+	glMemoryBarrier(GL_ALL_BARRIER_BITS);
+	if (gpu_timers_enabled)
+		labeling_stopwatch.stop_gpu_timer();
+	labeling_tool_prog.disable(*ctx_ptr);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
 void pct::point_cloud_server::label_all_points(const GLint label, const GLint point_group_mask, const GLint exclude_point_group_mask, const point_label_operation operation)
 {
 	//buffer layout position constants 

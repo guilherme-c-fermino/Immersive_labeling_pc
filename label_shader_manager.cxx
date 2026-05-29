@@ -26,7 +26,9 @@ const std::unordered_map<int, std::vector<std::string>> label_shader_manager::ma
 		{selection_shape::SS_SPHERE,{"selection_sphere.glsl"}},
 		{selection_shape::SS_CUBOID,{"selection_cuboid.glsl", "quaternion.glsl"}},
 		{selection_shape::SS_PLANE,{"selection_plane.glsl"}},
-		{selection_shape::SS_ALL,{"selection_all.glsl"}}
+		{selection_shape::SS_ALL,{"selection_all.glsl"}},
+		{selection_shape::SS_CONE,{"selection_cone.glsl", "quaternion.glsl"}},
+		{selection_shape::SS_CYLINDER,{"selection_cylinder.glsl", "quaternion.glsl"}}
 };
 
 //ss: selection of sphere sp: selection of plane sc: selection of cube
@@ -34,12 +36,16 @@ const std::unordered_map<int, std::string> label_shader_manager::map_of_shape_po
 		{selection_shape::SS_NONE,"no_selection"},		
 		{selection_shape::SS_SPHERE,"ss"},
 		{selection_shape::SS_CUBOID,"sc"},
-		{selection_shape::SS_PLANE,"sp"}
+		{selection_shape::SS_PLANE,"sp"},
+		{selection_shape::SS_CONE,"sco"},
+		{selection_shape::SS_CYLINDER,"scy"}
 };
 
 const std::set<selection_shape> label_shader_manager::pushing_shapes = {
 		{selection_shape::SS_SPHERE},
-		{selection_shape::SS_CUBOID}
+		{selection_shape::SS_CUBOID},
+		{selection_shape::SS_CONE},
+		{selection_shape::SS_CYLINDER}
 };
 
 // valid shapes for the labeling tool
@@ -47,7 +53,9 @@ const std::set<selection_shape> label_shader_manager::labeling_shapes = {
 		{selection_shape::SS_SPHERE},
 		{selection_shape::SS_CUBOID},
 		{selection_shape::SS_PLANE},
-		{selection_shape::SS_ALL}
+		{selection_shape::SS_ALL},
+		{selection_shape::SS_CONE},
+		{selection_shape::SS_CYLINDER}
 };
 
 
