@@ -5,6 +5,7 @@
 #include <cgv_gl/sphere_renderer.h>
 #include <cgv_gl/box_renderer.h>
 #include <cgv_gl/box_wire_renderer.h>
+#include <cgv_gl/cone_renderer.h>
 #include <memory>
 #include "vr_labels.h"
 #include "label_shader_manager.h"
@@ -23,6 +24,8 @@ namespace vrui {
 		PO_BOX_FRAME = 4,
 		PO_SPHERE_FRAME = 5,
 		PO_BOX_PLANE = 6,
+		PO_CONE = 7,
+		PO_CYLINDER = 8,
 		NUM_PALETTE_OBJECTS
 	};
 

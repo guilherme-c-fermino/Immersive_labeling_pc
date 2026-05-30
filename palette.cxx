@@ -370,6 +370,8 @@ namespace vrui {
 		auto& box_wire_indices = palette_indices[PO_BOX_FRAME];
 		auto& sphere_frame_indices = palette_indices[PO_SPHERE_FRAME];
 		auto& box_plane_indices = palette_indices[PO_BOX_PLANE];
+		auto& cone_indices = palette_indices[PO_CONE];
+		auto& cylinder_indices = palette_indices[PO_CYLINDER];
 
 		if (palette_changed) {
 			//palette_changed = false;
@@ -465,6 +467,57 @@ namespace vrui {
 
 		if (box_plane_indices.size())
 			palette_box_plane_renderer.render(ctx, 0, box_plane_indices.size());
+
+		// Render cone icons on the palette toolbar
+		if (cone_indices.size() > 0) {
+			auto& cr = cgv::render::ref_cone_renderer(ctx);
+			cgv::render::cone_render_style crs;
+			cr.set_render_style(crs);
+			float icon_size = 0.018f;
+			std::vector<vec3> cone_positions;
+			std::vector<float> cone_radii;
+			std::vector<cgv::rgba> cone_colors;
+			for (auto& ci : cone_indices) {
+				vec3 base = palette_object_positions[ci];
+				vec3 tip = base + vec3(0, icon_size * 2.0f, 0);
+				cone_positions.push_back(base);
+				cone_positions.push_back(tip);
+				cone_radii.push_back(icon_size * 0.5f);
+				cone_radii.push_back(0.0f);
+				cone_colors.push_back(palette_object_colors[ci]);
+				cone_colors.push_back(palette_object_colors[ci]);
+			}
+			cr.set_position_array(ctx, cone_positions);
+			cr.set_radius_array(ctx, cone_radii);
+			cr.set_color_array(ctx, cone_colors);
+			cr.render(ctx, 0, cone_positions.size());
+		}
+
+		// Render cylinder icons on the palette toolbar
+		if (cylinder_indices.size() > 0) {
+			auto& cr = cgv::render::ref_cone_renderer(ctx);
+			cgv::render::cone_render_style crs;
+			cr.set_render_style(crs);
+			float icon_size = 0.018f;
+			std::vector<vec3> cyl_positions;
+			std::vector<float> cyl_radii;
+			std::vector<cgv::rgba> cyl_colors;
+			for (auto& ci : cylinder_indices) {
+				vec3 center = palette_object_positions[ci];
+				vec3 left = center - vec3(icon_size, 0, 0);
+				vec3 right = center + vec3(icon_size, 0, 0);
+				cyl_positions.push_back(left);
+				cyl_positions.push_back(right);
+				cyl_radii.push_back(icon_size * 0.5f);
+				cyl_radii.push_back(icon_size * 0.5f);
+				cyl_colors.push_back(palette_object_colors[ci]);
+				cyl_colors.push_back(palette_object_colors[ci]);
+			}
+			cr.set_position_array(ctx, cyl_positions);
+			cr.set_radius_array(ctx, cyl_radii);
+			cr.set_color_array(ctx, cyl_colors);
+			cr.render(ctx, 0, cyl_positions.size());
+		}
 
 		if (sphere_frame_indices.size() > 0) {
 			auto& prog = instanced_rendering_prog();

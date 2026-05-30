@@ -1761,13 +1761,11 @@ void pointcloud_labeling_tool::build_palette()
 		case vrui::POG_TOP_TOOLBAR: {
 			//this is the top bar of the Palette on left controller
 			int i = po.position_in_group();
-			if (i < 3) {
-				point_selection_shape = (selection_shape)(i + 1);
+			if (i < 5) {
+				// Map toolbar position to selection_shape: 0=sphere, 1=plane, 2=cuboid, 3=cone, 4=cylinder
+				static const selection_shape shape_map[] = { SS_SPHERE, SS_PLANE, SS_CUBOID, SS_CONE, SS_CYLINDER };
+				point_selection_shape = shape_map[i];
 				point_editing_tool = pallete_tool::PT_BRUSH;
-			}
-			else if (i == 3) {
-				point_selection_shape = selection_shape::SS_NONE;
-				point_editing_tool = pallete_tool::PT_SELECTION;
 			}
 			update_controller_labels(); //need to update grip label since editing tool may have changed
 			break;
@@ -1786,9 +1784,9 @@ void pointcloud_labeling_tool::build_palette()
 	// add top toolbar brushes
 
 
-	std::vector<vrui::PaletteObject> top_bar_shapes = { PO_SPHERE, PO_PLANE, PO_CUBOID, PO_BOX_FRAME };
+	std::vector<vrui::PaletteObject> top_bar_shapes = { PO_SPHERE, PO_PLANE, PO_CUBOID, PO_CONE, PO_CYLINDER };
 	for (int i = 0; i < top_bar_shapes.size(); ++i) {
-		auto id = palette.add_object(top_bar_shapes[i], vec3((i - 1.5) * step_width, 0.1, -6 * step_width + toolbar_gap), rgba(0.501028, 0.51219, 0.540788, 1), vrui::POG_TOP_TOOLBAR);
+		auto id = palette.add_object(top_bar_shapes[i], vec3((i - 2.0) * step_width, 0.1, -6 * step_width + toolbar_gap), rgba(0.501028, 0.51219, 0.540788, 1), vrui::POG_TOP_TOOLBAR);
 	}
 	//This is for adding left copy-paste menu bar
 	if (show_left_bar) {
