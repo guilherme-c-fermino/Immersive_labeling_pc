@@ -12,6 +12,12 @@ pct::controller_labels::controller_labels() : label_cs(CoordinateSystem::CS_LAB)
 	reference_scale[CLP_GRIP] = 0.2f;
 
 	float trackpad_scale = 0.125f;
+
+	// CLP_SIDE repurposed as A/X button position (below B/Y button on Quest)
+	reference_positions[CLP_SIDE] = vec3(0.014, 0.035, 0.029);
+	reference_orientations[CLP_SIDE] = quat(vec3(1, 0, 0), -acos(0.f));
+	reference_scale[CLP_SIDE] = trackpad_scale;
+
 	reference_positions[CLP_TRACKPAD_UP] = vec3(0.0, 0.008, 0.0355);
 	reference_orientations[CLP_TRACKPAD_UP] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_UP] = trackpad_scale;
@@ -33,7 +39,8 @@ pct::controller_labels::controller_labels() : label_cs(CoordinateSystem::CS_LAB)
 	reference_orientations[CLP_TRACKPAD_CENTER] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_CENTER] = trackpad_scale;
 
-	reference_positions[CLP_MENU_BUTTON] = vec3(0.0, 0.008, 0.0215);
+	// CLP_MENU_BUTTON = B/Y button position on Quest (above A/X button)
+	reference_positions[CLP_MENU_BUTTON] = vec3(0.0, 0.035, 0.015);
 	reference_orientations[CLP_MENU_BUTTON] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_MENU_BUTTON] = trackpad_scale;
 }
@@ -117,7 +124,17 @@ void pct::controller_labels::draw(cgv::render::context& ctx)
 
 void pct::controller_labels::draw_grip(cgv::render::context& ctx, int li)
 {
-	std::array<vec3, 2> positions = { reference_positions[CLP_GRIP] , vec3(-reference_positions[CLP_GRIP].x(), reference_positions[CLP_GRIP].y(), reference_positions[CLP_GRIP].z())};
-	std::array<quat, 2> orientations = { reference_orientations[CLP_GRIP], reference_orientations[CLP_GRIP].conj()};
-	draw_multiple(ctx, li, positions.data(), orientations.data(), 2);
+	// Draw grip label only on inner side of the controller
+	// Right controller (CS_RIGHT_CONTROLLER): inner side is -x
+	// Left controller (CS_LEFT_CONTROLLER): inner side is +x
+	vec3 pos;
+	quat ori;
+	if (label_cs == CoordinateSystem::CS_RIGHT_CONTROLLER) {
+		pos = reference_positions[CLP_GRIP]; // already at -x
+		ori = reference_orientations[CLP_GRIP];
+	} else {
+		pos = vec3(-reference_positions[CLP_GRIP].x(), reference_positions[CLP_GRIP].y(), reference_positions[CLP_GRIP].z());
+		ori = reference_orientations[CLP_GRIP].conj();
+	}
+	draw_multiple(ctx, li, &pos, &ori, 1);
 }

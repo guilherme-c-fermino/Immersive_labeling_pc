@@ -630,6 +630,7 @@ void pct::point_cloud_server::label_points_in_sphere(const GLint label, const GL
 	labeling_tool_prog.set_uniform(*ctx_ptr, "point_groups", point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "exclude_point_groups", exclude_point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)op);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_history", interaction_settings.enable_history);
 
 	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
 
@@ -713,6 +714,7 @@ void pct::point_cloud_server::label_points_in_box(const GLint label, const GLint
 	labeling_tool_prog.set_uniform(*ctx_ptr, "point_groups", point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "exclude_point_groups", exclude_point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (int)operation);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_history", interaction_settings.enable_history);
 
 	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
 
@@ -790,6 +792,7 @@ void pct::point_cloud_server::label_points_by_clipping(const GLint label, const 
 	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_plane_origin", position.lift(), true);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "selection_plane_normal", plane_normal, true);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)operation);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_history", interaction_settings.enable_history);
 
 	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
 
@@ -863,6 +866,7 @@ void pct::point_cloud_server::label_points_in_cone(const GLint label, const GLin
 	labeling_tool_prog.set_uniform(*ctx_ptr, "point_groups", point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "exclude_point_groups", exclude_point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)operation);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_history", interaction_settings.enable_history);
 
 	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
 
@@ -930,6 +934,7 @@ void pct::point_cloud_server::label_points_in_cylinder(const GLint label, const 
 	labeling_tool_prog.set_uniform(*ctx_ptr, "point_groups", point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "exclude_point_groups", exclude_point_group_mask & (int32_t)point_label_group::GROUP_MASK);
 	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)operation);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_history", interaction_settings.enable_history);
 
 	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
 
@@ -978,7 +983,7 @@ void pct::point_cloud_server::label_all_points(const GLint label, const GLint po
 	//give plane in world space
 	labeling_tool_prog.set_uniform(*ctx_ptr, "operation", (GLint)operation);
 
-	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_label_history", interaction_settings.enable_history);
+	labeling_tool_prog.set_uniform(*ctx_ptr, "enable_history", interaction_settings.enable_history);
 
 	set_constraint_uniforms(*ctx_ptr, labeling_tool_prog, active_constraint);
 

@@ -87,7 +87,8 @@ enum class LabelOperation {
 enum InteractionMode {
 	TELEPORT = 0,
 	LABELING = 1,
-	CONFIG = 2,
+	LABELING_2 = 2,
+	CONFIG = 3,
 	NUM_OF_INTERACTIONS
 };
 
@@ -680,6 +681,14 @@ private:
 	void recompute_instance_label();
 	/// check instance-to-semantic constraint, returns true if painting is allowed
 	bool check_instance_constraint() const;
+
+	// --- Sculpt-to-label mode (LABELING_2) ---
+	bool sculpt_incrop_mode = false;  ///< false = outcrop (hide inside brush), true = incrop (keep inside brush)
+	bool sculpt_incrop_triggered = false; ///< edge-detection flag for incrop single-press
+	bool sculpt_marker_applied = false;   ///< true once marker bit has been applied to all visible points
+	static constexpr GLint SCULPT_MARKER_BIT = 0x0008; ///< bit 3, used to track sculpted points for restore
+	uint32_t sculpt_mode_label_id = (uint32_t)-1; ///< text label showing INCROP/OUTCROP state
+
 	selection_shape point_pushing_shape;
 	/// store shapes here that must not be used to push points
 	std::set<selection_shape> pushing_shape_blacklist;
