@@ -688,6 +688,12 @@ private:
 	bool sculpt_marker_applied = false;   ///< true once marker bit has been applied to all visible points
 	static constexpr GLint SCULPT_MARKER_BIT = 0x0008; ///< bit 3, used to track sculpted points for restore
 	uint32_t sculpt_mode_label_id = (uint32_t)-1; ///< text label showing INCROP/OUTCROP state
+	uint32_t interaction_mode_label_id = (uint32_t)-1; ///< text label showing current interaction mode on left controller
+
+	// --- Painter mode (LABELING) inpaint/outpaint ---
+	bool painter_outpaint_mode = false;  ///< false = inpaint (label inside brush), true = outpaint (label outside brush)
+	bool painter_outpaint_triggered = false; ///< edge-detection flag for outpaint single-press
+	uint32_t painter_mode_label_id = (uint32_t)-1; ///< text label showing INPAINT/OUTPAINT state
 
 	selection_shape point_pushing_shape;
 	/// store shapes here that must not be used to push points

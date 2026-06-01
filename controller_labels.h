@@ -13,6 +13,7 @@ namespace pct {
 		CLP_TRACKPAD_LEFT,
 		CLP_TRACKPAD_CENTER,
 		CLP_MENU_BUTTON,
+		CLP_TRIGGER,
 		CLP_NUM_LABEL_PLACEMENTS
 	};
 
@@ -85,8 +86,8 @@ namespace pct {
 
 		void draw(cgv::render::context& ctx);
 	protected:
-		/// special draw method for the grip button labels
-		void draw_grip(cgv::render::context& ctx, int li);
+		/// special draw method for labels that mirror X between left/right controllers
+		void draw_mirrored(cgv::render::context& ctx, int li, controller_label_placement placement);
 	};
 
 }

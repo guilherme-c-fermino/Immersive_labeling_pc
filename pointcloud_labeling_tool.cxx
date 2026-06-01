@@ -604,6 +604,7 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 				"[Painter Labeling]\n"
 				"Stick <Vertical> [Left Ctrl]: change mode\n"
 				"Stick <Horizontal> [Left Ctrl]: change brush size\n"
+				"Trigger [Left Ctrl]: toggle inpaint/outpaint\n"
 				"Grip [Left Ctrl]: scale point cloud\n"
 				"Y button [Left Ctrl]: undo last operation\n"
 				"X button [Left Ctrl]: toggle instance colors\n"
@@ -656,6 +657,18 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 			controller_labels[1].add_variant(CLP_SIDE, "instance--", controller_label_color));
 		controller_label_variants[0][InteractionMode::LABELING][CLP_SIDE].push_back(
 			controller_labels[0].add_variant(CLP_SIDE, "instance\ncolors", controller_label_color));
+
+		// Trigger labels for LABELING mode
+		controller_label_variants[1][InteractionMode::LABELING][CLP_TRIGGER].push_back(
+			controller_labels[1].add_variant(CLP_TRIGGER, "paint", controller_label_color));
+		controller_label_variants[0][InteractionMode::LABELING][CLP_TRIGGER].push_back(
+			controller_labels[0].add_variant(CLP_TRIGGER, "in/outpaint", controller_label_color));
+
+		// Size +/- labels for left controller stick horizontal
+		controller_label_variants[0][InteractionMode::LABELING][CLP_TRACKPAD_LEFT].push_back(
+			controller_labels[0].add_variant(CLP_TRACKPAD_LEFT, "- size", controller_label_color));
+		controller_label_variants[0][InteractionMode::LABELING][CLP_TRACKPAD_RIGHT].push_back(
+			controller_labels[0].add_variant(CLP_TRACKPAD_RIGHT, "size +", controller_label_color));
 	}
 
 	{
@@ -713,12 +726,39 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 		controller_label_variants[0][InteractionMode::LABELING_2][CLP_SIDE].push_back(
 			controller_labels[0].add_variant(CLP_SIDE, "instance\ncolors", controller_label_color));
 
+		// Stick click labels: cancel (left, red) and confirm (right, green)
+		controller_label_variants[0][InteractionMode::LABELING_2][CLP_TRACKPAD_CENTER].push_back(
+			controller_labels[0].add_variant(CLP_TRACKPAD_CENTER, "cancel", rgba(0.9f, 0.2f, 0.2f, 1.0f)));
+		controller_label_variants[1][InteractionMode::LABELING_2][CLP_TRACKPAD_CENTER].push_back(
+			controller_labels[1].add_variant(CLP_TRACKPAD_CENTER, "confirm", rgba(0.2f, 0.9f, 0.2f, 1.0f)));
+
+		// Trigger labels for LABELING_2 (sculpt) mode
+		controller_label_variants[1][InteractionMode::LABELING_2][CLP_TRIGGER].push_back(
+			controller_labels[1].add_variant(CLP_TRIGGER, "sculpt", controller_label_color));
+		controller_label_variants[0][InteractionMode::LABELING_2][CLP_TRIGGER].push_back(
+			controller_labels[0].add_variant(CLP_TRIGGER, "in/outcrop", controller_label_color));
+
+		// Size +/- labels for left controller stick horizontal (sculpt chisel size)
+		controller_label_variants[0][InteractionMode::LABELING_2][CLP_TRACKPAD_LEFT].push_back(
+			controller_labels[0].add_variant(CLP_TRACKPAD_LEFT, "- size", controller_label_color));
+		controller_label_variants[0][InteractionMode::LABELING_2][CLP_TRACKPAD_RIGHT].push_back(
+			controller_labels[0].add_variant(CLP_TRACKPAD_RIGHT, "size +", controller_label_color));
+
 		// Sculpt mode indicator label (shown on left controller)
 		sculpt_mode_label_id = text_labels.add_label(
 			"Mode: OUTCROP", rgba(0.9f, 0.6f, 0.1f, 1.0f));
 		text_labels.place_label(sculpt_mode_label_id,
 			vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
 		text_labels.hide_label(sculpt_mode_label_id);
+	}
+
+	// Painter mode indicator label (shown on left controller)
+	{
+		painter_mode_label_id = text_labels.add_label(
+			"Mode: INPAINT", rgba(0.9f, 0.6f, 0.1f, 1.0f));
+		text_labels.place_label(painter_mode_label_id,
+			vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+		text_labels.hide_label(painter_mode_label_id);
 	}
 
 	/* {
@@ -745,6 +785,10 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 	apply_spacing_label_variant = controller_labels[1].add_variant(CLP_MENU_BUTTON, "apply spacing", controller_label_color);
 	controller_label_variants[1][InteractionMode::CONFIG][CLP_MENU_BUTTON].push_back(apply_spacing_label_variant);
 
+	// Trigger label for CONFIG mode (right: measure spacing)
+	controller_label_variants[1][InteractionMode::CONFIG][CLP_TRIGGER].push_back(
+		controller_labels[1].add_variant(CLP_TRIGGER, "measure", controller_label_color));
+
 	{
 		tool_help_label_id[InteractionMode::TELEPORT][1] =
 			text_labels.add_label(
@@ -766,6 +810,18 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 			controller_labels[0].add_variant(CLP_GRIP, "scale cloud", controller_label_color));
 		controller_label_variants[1][InteractionMode::TELEPORT][CLP_SIDE].push_back(
 			controller_labels[1].add_variant(CLP_SIDE, "reset view", controller_label_color));
+
+		// Trigger label for TELEPORT mode
+		controller_label_variants[1][InteractionMode::TELEPORT][CLP_TRIGGER].push_back(
+			controller_labels[1].add_variant(CLP_TRIGGER, "teleport", controller_label_color));
+	}
+
+	// Interaction mode indicator label on left controller (always visible)
+	{
+		interaction_mode_label_id = text_labels.add_label(
+			"TELEPORT", rgba(0.2f, 0.7f, 0.9f, 1.0f));
+		text_labels.place_label(interaction_mode_label_id,
+			vec3(0.0, 0.0, -0.04), tool_label_ori, CS_LEFT_CONTROLLER, LA_CENTER, tool_label_scale);
 	}
 
 	{ // point spacing tool
@@ -875,6 +931,14 @@ void pointcloud_labeling_tool::init_frame(cgv::render::context& ctx)
 			text_labels.show_label(sculpt_mode_label_id);
 		else
 			text_labels.hide_label(sculpt_mode_label_id);
+	}
+
+	// show/hide painter mode indicator based on mode
+	if (painter_mode_label_id != (uint32_t)-1) {
+		if ((InteractionMode)interaction_mode == InteractionMode::LABELING)
+			text_labels.show_label(painter_mode_label_id);
+		else
+			text_labels.hide_label(painter_mode_label_id);
 	}
 
 	// update visibility of visibility changing labels
@@ -2277,36 +2341,94 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 
 							point_server_ptr->ref_interaction_settings() = point_cloud_interaction_settings;
 
-							switch (point_selection_shape) {
-							case SS_SPHERE:
-								point_server_ptr->label_points_in_sphere(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(sphere_style_rhand.radius), sphere_style_rhand.radius, picked_label_operation);
-								break;
-							case SS_PLANE:
-								point_server_ptr->label_points_by_clipping(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
-									cgv::math::pose_position(controller_poses[point_selection_hand]) + curr_offset_rhand,
-									cgv::math::pose_orientation(controller_poses[point_selection_hand]), plane_invert_selection, picked_label_operation);
-								break;
-							case SS_CUBOID:
-								point_server_ptr->label_points_in_box(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
-									cube_rhand, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cube_rhand.get_extent().z()*0.5f), cube_orientation_rhand, picked_label_operation);
-								break;
-							case SS_CONE:
-								point_server_ptr->label_points_in_cone(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
-									cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(0.0f), cone_height, cone_orientation_rhand, picked_label_operation);
-								break;
-							case SS_CYLINDER:
-								point_server_ptr->label_points_in_cylinder(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
-									cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cylinder_radius), cylinder_radius, cylinder_height, cylinder_orientation_rhand, picked_label_operation);
-								break;
-							case SS_ALL:
-							{
-								//disable rollback for this operation
-								bool history_flag = point_cloud_interaction_settings.enable_history;
-								point_cloud_interaction_settings.enable_history = false;
-								point_server_ptr->label_all_points(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, picked_label_operation);
-								point_cloud_interaction_settings.enable_history = history_flag;
-								break;
+							if (!painter_outpaint_mode) {
+								// INPAINT: label points INSIDE brush (normal behavior)
+								switch (point_selection_shape) {
+								case SS_SPHERE:
+									point_server_ptr->label_points_in_sphere(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(sphere_style_rhand.radius), sphere_style_rhand.radius, picked_label_operation);
+									break;
+								case SS_PLANE:
+									point_server_ptr->label_points_by_clipping(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cgv::math::pose_position(controller_poses[point_selection_hand]) + curr_offset_rhand,
+										cgv::math::pose_orientation(controller_poses[point_selection_hand]), plane_invert_selection, picked_label_operation);
+									break;
+								case SS_CUBOID:
+									point_server_ptr->label_points_in_box(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cube_rhand, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cube_rhand.get_extent().z()*0.5f), cube_orientation_rhand, picked_label_operation);
+									break;
+								case SS_CONE:
+									point_server_ptr->label_points_in_cone(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(0.0f), cone_height, cone_orientation_rhand, picked_label_operation);
+									break;
+								case SS_CYLINDER:
+									point_server_ptr->label_points_in_cylinder(picked_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cylinder_radius), cylinder_radius, cylinder_height, cylinder_orientation_rhand, picked_label_operation);
+									break;
+								case SS_ALL:
+								{
+									//disable rollback for this operation
+									bool history_flag = point_cloud_interaction_settings.enable_history;
+									point_cloud_interaction_settings.enable_history = false;
+									point_server_ptr->label_all_points(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, picked_label_operation);
+									point_cloud_interaction_settings.enable_history = history_flag;
+									break;
+								}
+								}
 							}
+							else if (!painter_outpaint_triggered) {
+								// OUTPAINT: edge-triggered — label all points OUTSIDE brush
+								painter_outpaint_triggered = true;
+								GLint mark_label = make_label(0, (uint32_t)point_label_group::SELECTED_BIT);
+								GLint unmark_label = ~make_label(0, (uint32_t)point_label_group::SELECTED_BIT);
+
+								// Disable history for temp marker passes (only Pass 2 should be undoable)
+								bool history_flag = point_cloud_interaction_settings.enable_history;
+								point_server_ptr->ref_interaction_settings().enable_history = false;
+
+								// Pass 1: Mark points INSIDE brush with SELECTED_BIT (protect them from labeling)
+								switch (point_selection_shape) {
+								case SS_SPHERE:
+									point_server_ptr->label_points_in_sphere(mark_label, point_selection_group_mask, point_selection_exclude_group_mask, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(sphere_style_rhand.radius), sphere_style_rhand.radius, point_label_operation::OR);
+									break;
+								case SS_PLANE:
+									point_server_ptr->label_points_by_clipping(mark_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cgv::math::pose_position(controller_poses[point_selection_hand]) + curr_offset_rhand,
+										cgv::math::pose_orientation(controller_poses[point_selection_hand]), plane_invert_selection, point_label_operation::OR);
+									break;
+								case SS_CUBOID:
+									point_server_ptr->label_points_in_box(mark_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cube_rhand, cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cube_rhand.get_extent().z()*0.5f), cube_orientation_rhand, point_label_operation::OR);
+									break;
+								case SS_CONE:
+									point_server_ptr->label_points_in_cone(mark_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(0.0f), cone_height, cone_orientation_rhand, point_label_operation::OR);
+									break;
+								case SS_CYLINDER:
+									point_server_ptr->label_points_in_cylinder(mark_label, point_selection_group_mask, point_selection_exclude_group_mask,
+										cgv::math::pose_position(controller_poses[point_selection_hand]) + shape_offset(cylinder_radius), cylinder_radius, cylinder_height, cylinder_orientation_rhand, point_label_operation::OR);
+									break;
+								case SS_ALL:
+									// outpaint with SS_ALL makes no sense (nothing is inside → everything outside)
+									point_server_ptr->ref_interaction_settings().enable_history = history_flag;
+									point_server_ptr->label_all_points(picked_label, point_selection_group_mask, point_selection_exclude_group_mask, picked_label_operation);
+									break;
+								}
+
+								if (point_selection_shape != SS_ALL) {
+									// Pass 2: Label all points that DON'T have SELECTED_BIT (i.e. outside the brush)
+									// Re-enable history so this is the only undoable operation
+									point_server_ptr->ref_interaction_settings().enable_history = history_flag;
+									point_server_ptr->label_all_points(picked_label, point_selection_group_mask,
+										point_selection_exclude_group_mask | (GLint)point_label_group::SELECTED_BIT, picked_label_operation);
+
+									// Pass 3: Clear SELECTED_BIT from all points (cleanup temp marker)
+									// Disable history again — this is just cleanup, not undoable
+									point_server_ptr->ref_interaction_settings().enable_history = false;
+									point_server_ptr->label_all_points(unmark_label, (GLint)point_label_group::GROUP_MASK, 0, point_label_operation::AND);
+								}
+
+								// Restore history setting
+								point_server_ptr->ref_interaction_settings().enable_history = history_flag;
 							}
 
 							stop_labeling = std::chrono::steady_clock::now();
@@ -2563,6 +2685,11 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				trackpad_direction = (trackpad_direction == 0) ? -1 : trackpad_direction;
 				//switch interaction mode
 				if (vrke.get_controller_index() == 0) {
+					// Block mode change if a sculpt session is in progress
+					if ((InteractionMode)interaction_mode == InteractionMode::LABELING_2 && sculpt_marker_applied) {
+						std::cout << "Mode change blocked: confirm or cancel sculpt first." << std::endl;
+						break;
+					}
 					interaction_mode = (interaction_mode + trackpad_direction) % (int)(NUM_OF_INTERACTIONS);
 					if (interaction_mode < 0)
 						interaction_mode = interaction_mode + (int)InteractionMode::NUM_OF_INTERACTIONS;
@@ -2861,7 +2988,7 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				// Vertical (up-down) movement: move tracking origin (auto-repeat while held)
 				int y_direction = abs(vrse.get_y()) > vertical_threshold ? (cgv::math::sign(vrse.get_y()) >= 0 ? 1 : -1) : 0;
 				static auto last_move_time = std::chrono::steady_clock::now();
-				static constexpr double move_repeat_interval = 0.25; // seconds between auto-repeat steps
+				static constexpr double move_repeat_interval = 0.15; // seconds between auto-repeat steps
 				if (y_direction == 0) {
 					last_stick_y_direction[1] = 0;
 				}
@@ -2887,20 +3014,20 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 		auto& te = static_cast<cgv::gui::vr_throttle_event&>(e);
 		int ci = te.get_controller_index();
 		float v = te.get_value();
-		//bool d = (v == 1); // event 
-		/*if (ci == 1) { // right hand 
-			if (v > 0) {
 
+		// Use axes[2] (trigger) directly from state to detect trigger threshold crossings
+		// This avoids reacting to grip throttle events
+		const vr::vr_kit_state* state = vr_view_ptr->get_current_vr_state();
+		if (state) {
+			float trigger_value = state->controller[ci].axes[2];
+			if (last_throttle_state[ci] < throttle_threshold && trigger_value >= throttle_threshold) {
+				on_throttle_threshold(ci, true);
 			}
-		}*/
-		
-		if (last_throttle_state[ci] < throttle_threshold && v >= throttle_threshold) {
-			on_throttle_threshold(ci, true);
+			else if (last_throttle_state[ci] >= throttle_threshold && trigger_value < throttle_threshold) {
+				on_throttle_threshold(ci, false);
+			}
+			last_throttle_state[ci] = trigger_value;
 		}
-		else if (last_throttle_state[ci] >= throttle_threshold && v < throttle_threshold) {
-			on_throttle_threshold(ci, false);
-		}
-		last_throttle_state[te.get_controller_index()] = v;
 		return true;
 	}
 	return false;
@@ -2922,6 +3049,21 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 				vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
 		}
 		std::cout << "Sculpt mode: " << (sculpt_incrop_mode ? "INCROP" : "OUTCROP") << std::endl;
+		update_controller_labels();
+		return;
+	}
+
+	// Left trigger in LABELING: toggle inpaint/outpaint on press
+	if (ci == 0 && low_high && (InteractionMode)interaction_mode == InteractionMode::LABELING) {
+		painter_outpaint_mode = !painter_outpaint_mode;
+		// Update the painter mode indicator label
+		if (painter_mode_label_id != (uint32_t)-1) {
+			std::string mode_text = painter_outpaint_mode ? "Mode: OUTPAINT" : "Mode: INPAINT";
+			text_labels.update_label_text(painter_mode_label_id, mode_text);
+			text_labels.place_label(painter_mode_label_id,
+				vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+		}
+		std::cout << "Painter mode: " << (painter_outpaint_mode ? "OUTPAINT" : "INPAINT") << std::endl;
 		update_controller_labels();
 		return;
 	}
@@ -2966,9 +3108,11 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 
 	// !low_high means release the trigger
 	if (!low_high) {
-		// Reset incrop edge detection flag on trigger release
-		if (ci == 1)
+		// Reset incrop/outpaint edge detection flags on trigger release
+		if (ci == 1) {
 			sculpt_incrop_triggered = false;
+			painter_outpaint_triggered = false;
+		}
 
 		// add rollback operation on releasing the trigger (never in LABELING_2 — checkpoints are managed by confirm/cancel)
 		if (point_cloud_interaction_settings.enable_history
@@ -2976,11 +3120,14 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 			history_ptr->add_rollback_operation();
 		
 		if ((InteractionMode)interaction_mode == InteractionMode::TELEPORT) {
-			static constexpr int cid = 1;
-			const vr::vr_kit_state* state_ptr = vr_view_ptr->get_current_vr_state();
-			vec3 ray_origin, ray_direction;
-			state_ptr->controller[cid].put_ray(&ray_origin(0), &ray_direction(0));
-			teleport_ray(ray_direction, ray_origin, teleport_ray_radius);
+			// Only teleport if grip is not held (grip = grab cloud, not teleport)
+			if (!is_rotating_moving) {
+				static constexpr int cid = 1;
+				const vr::vr_kit_state* state_ptr = vr_view_ptr->get_current_vr_state();
+				vec3 ray_origin, ray_direction;
+				state_ptr->controller[cid].put_ray(&ray_origin(0), &ray_direction(0));
+				teleport_ray(ray_direction, ray_origin, teleport_ray_radius);
+			}
 			draw_teleport_destination = false;
 		}
 	}
@@ -4702,6 +4849,16 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 	
 	update_help_labels(im);
 	update_controller_labels();
+
+	// Update interaction mode indicator on left controller
+	if (interaction_mode_label_id != (uint32_t)-1) {
+		const char* mode_names[] = { "TELEPORT", "PAINTER", "SCULPT", "CONFIG" };
+		int idx = (int)im;
+		const char* name = (idx >= 0 && idx < 4) ? mode_names[idx] : "UNKNOWN";
+		text_labels.update_label_text(interaction_mode_label_id, name);
+		text_labels.place_label(interaction_mode_label_id,
+			vec3(0.0, 0.0, -0.04), tool_label_ori, CS_LEFT_CONTROLLER, LA_CENTER, tool_label_scale);
+	}
 }
 
 void pointcloud_labeling_tool::rescale_point_cloud(float new_scale)
@@ -4723,20 +4880,8 @@ bool pointcloud_labeling_tool::teleport_ray(const vec3& direction, const vec3& o
 	float t;
 	vec3 p;
 	if (point_server_ptr->raycast_points(direction, origin, ray_radius, t, p)) {
-		if (overview_mode) {
-			mat4 inv_model_transform = (mat4)inv(point_server_ptr->get_point_cloud_model_transform());
-			point_server_ptr->restore_transformation_state(stored_state.first);
-			//stored_state.first.restore_state(source_pc);
-			source_point_cloud.ref_render_style() = stored_state.second;
-			// build model_transform
-			mat4 new_model_transform = cgv::math::translate4(point_server_ptr->ref_point_cloud_position())
-				* cgv::math::rotate4<float>(point_server_ptr->ref_point_cloud_rotation())
-				* cgv::math::scale4(point_server_ptr->ref_point_cloud_scale(), point_server_ptr->ref_point_cloud_scale(), point_server_ptr->ref_point_cloud_scale());
-
-
-			p = new_model_transform * inv_model_transform * p.lift();
-			overview_mode = false;
-		}
+		// Just exit overview mode without restoring the cloud transformation
+		overview_mode = false;
 
 		vec3 new_position = vr_view_ptr->get_tracking_origin() + (p - origin);
 		vr_view_ptr->set_tracking_origin(new_position);

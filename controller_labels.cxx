@@ -13,36 +13,41 @@ pct::controller_labels::controller_labels() : label_cs(CoordinateSystem::CS_LAB)
 
 	float trackpad_scale = 0.125f;
 
-	// CLP_SIDE repurposed as A/X button position (below B/Y button on Quest)
-	reference_positions[CLP_SIDE] = vec3(0.014, 0.035, 0.029);
+	// CLP_SIDE = A/X button — on the -X axis ball (inner side of right controller)
+	reference_positions[CLP_SIDE] = vec3(-0.05, 0.0, 0.012);
 	reference_orientations[CLP_SIDE] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_SIDE] = trackpad_scale;
 
-	reference_positions[CLP_TRACKPAD_UP] = vec3(0.0, 0.008, 0.0355);
+	reference_positions[CLP_TRACKPAD_UP] = vec3(0.0, 0.05, -0.012);
 	reference_orientations[CLP_TRACKPAD_UP] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_UP] = trackpad_scale;
 
-	reference_positions[CLP_TRACKPAD_DOWN] = vec3(0.0, 0.008, 0.063);
+	reference_positions[CLP_TRACKPAD_DOWN] = vec3(0.0, 0.05, 0.012);
 	reference_orientations[CLP_TRACKPAD_DOWN] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_DOWN] = trackpad_scale;
-	float trackpad_horizontal_center_line = 0.05;
-	float trackpad_left_right_spread = 0.013;
-	reference_positions[CLP_TRACKPAD_LEFT] = vec3(-trackpad_left_right_spread, 0.008, trackpad_horizontal_center_line);
+	float trackpad_horizontal_center_line = 0.0;
+	float trackpad_left_right_spread = 0.03;
+	reference_positions[CLP_TRACKPAD_LEFT] = vec3(-trackpad_left_right_spread, 0.05, trackpad_horizontal_center_line);
 	reference_orientations[CLP_TRACKPAD_LEFT] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_LEFT] = trackpad_scale;
 
-	reference_positions[CLP_TRACKPAD_RIGHT] = vec3(trackpad_left_right_spread, 0.008, trackpad_horizontal_center_line);
+	reference_positions[CLP_TRACKPAD_RIGHT] = vec3(trackpad_left_right_spread, 0.05, trackpad_horizontal_center_line);
 	reference_orientations[CLP_TRACKPAD_RIGHT] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_RIGHT] = trackpad_scale;
 
-	reference_positions[CLP_TRACKPAD_CENTER] = vec3(0.0, 0.008, trackpad_horizontal_center_line);
+	reference_positions[CLP_TRACKPAD_CENTER] = vec3(0.0, 0.05, -0.025);
 	reference_orientations[CLP_TRACKPAD_CENTER] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_TRACKPAD_CENTER] = trackpad_scale;
 
-	// CLP_MENU_BUTTON = B/Y button position on Quest (above A/X button)
-	reference_positions[CLP_MENU_BUTTON] = vec3(0.0, 0.035, 0.015);
+	// CLP_MENU_BUTTON = B/Y button — on the -X axis ball (inner side of right controller), offset from A/X
+	reference_positions[CLP_MENU_BUTTON] = vec3(-0.05, 0.0, -0.012);
 	reference_orientations[CLP_MENU_BUTTON] = quat(vec3(1, 0, 0), -acos(0.f));
 	reference_scale[CLP_MENU_BUTTON] = trackpad_scale;
+
+	// CLP_TRIGGER = trigger button — below and in front, same orientation/size as grip
+	reference_positions[CLP_TRIGGER] = vec3(-0.02, -0.045, -0.02);
+	reference_orientations[CLP_TRIGGER] = quat(vec3(0, 1, 0), -1.5f);
+	reference_scale[CLP_TRIGGER] = 0.2f;
 }
 
 void pct::controller_labels::set_active_profile(active_labels_array& profile)
@@ -113,8 +118,8 @@ void pct::controller_labels::draw(cgv::render::context& ctx)
 		if (active_labels[i] != -1) {
 			int li = label_ids[i][active_labels[i]];
 			if (check_handle(li)) {
-				if (i == CLP_GRIP)
-					this->draw_grip(ctx, li);
+				if (i == CLP_GRIP || i == CLP_SIDE || i == CLP_MENU_BUTTON || i == CLP_TRIGGER)
+					this->draw_mirrored(ctx, li, (controller_label_placement)i);
 				else
 					vr_labels::draw(ctx, li);
 			}
@@ -122,19 +127,23 @@ void pct::controller_labels::draw(cgv::render::context& ctx)
 	}
 }
 
-void pct::controller_labels::draw_grip(cgv::render::context& ctx, int li)
+void pct::controller_labels::draw_mirrored(cgv::render::context& ctx, int li, controller_label_placement placement)
 {
-	// Draw grip label only on inner side of the controller
-	// Right controller (CS_RIGHT_CONTROLLER): inner side is -x
-	// Left controller (CS_LEFT_CONTROLLER): inner side is +x
+	// Draw label mirrored on left controller: negate X position
+	// For grip/trigger style labels (Y-axis rotation), also conjugate orientation
+	// For trackpad-style labels (X-axis rotation), keep orientation as-is
 	vec3 pos;
 	quat ori;
 	if (label_cs == CoordinateSystem::CS_RIGHT_CONTROLLER) {
-		pos = reference_positions[CLP_GRIP]; // already at -x
-		ori = reference_orientations[CLP_GRIP];
+		pos = reference_positions[placement];
+		ori = reference_orientations[placement];
 	} else {
-		pos = vec3(-reference_positions[CLP_GRIP].x(), reference_positions[CLP_GRIP].y(), reference_positions[CLP_GRIP].z());
-		ori = reference_orientations[CLP_GRIP].conj();
+		pos = vec3(-reference_positions[placement].x(), reference_positions[placement].y(), reference_positions[placement].z());
+		// Only conjugate for grip/trigger (Y-axis oriented labels)
+		if (placement == CLP_GRIP || placement == CLP_TRIGGER)
+			ori = reference_orientations[placement].conj();
+		else
+			ori = reference_orientations[placement];
 	}
 	draw_multiple(ctx, li, &pos, &ori, 1);
 }
