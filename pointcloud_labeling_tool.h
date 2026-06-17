@@ -44,10 +44,13 @@
 #include "point_cloud_clipboard.h"
 #include "controller_labels.h"
 
+#include <ann_tree.h>
+
 #include <string>
 #include <sstream>
 #include <mutex>
 #include <future>
+#include <atomic>
 #include <array>
 #include <set>
 #include <io.h>
@@ -88,7 +91,8 @@ enum InteractionMode {
 	TELEPORT = 0,
 	LABELING = 1,
 	LABELING_2 = 2,
-	CONFIG = 3,
+	LABELING_3 = 3,
+	CONFIG = 4,
 	NUM_OF_INTERACTIONS
 };
 
@@ -270,6 +274,21 @@ protected:
 	void timer_event(double t, double dt);
 	/// enables or disables point cloud fetching from an rgbd device for the rgbd_registration tool
 	void fetch_from_rgbd(bool x);
+	/// cycle config size preset selection (direction: +1 next, -1 previous)
+	void cycle_config_size_preset(int direction);
+	/// apply currently selected config size preset to point cloud scale
+	void apply_config_size_preset();
+	/// return human readable name of selected config size preset
+	std::string get_config_size_preset_name() const;
+	/// compute absolute point cloud scale for the given config size preset index
+	float compute_scale_for_preset(int preset_index) const;
+
+	// --- LABELING_3 control point annotation ---
+	void update_cp_params_label(); ///< rebuilds the cp_omega_label text showing all 4 params with selection marker
+	/// build ANN kd-tree from source_point_cloud asynchronously for fast KNN queries
+	void build_knn_graph_async();
+	/// run multi-source Dijkstra from all confirmed control points and apply labels
+	void cp_apply_labels();
 	
 	/// recreates the chunks if the rechunk button is pressed
 	void on_rechunk();
@@ -453,6 +472,16 @@ private:
 	bool show_teleport_ray;
 	double teleport_spere_radius_factor;
 
+	// ── Set-point system (TELEPORT mode) ────────────────────────────────────
+	struct SetPoint {
+		vec3 local_position; ///< position in point-cloud local space (follows cloud transforms)
+		float hit_t;         ///< ray parameter at time of placement (used to scale the marker)
+	};
+	std::vector<SetPoint> teleport_set_points;   ///< all saved set points
+	int teleport_selected_sp = 0;                ///< index of currently selected set point (0-based)
+	bool teleport_sp_mode = false;               ///< false = instant teleport, true = set-point placement mode
+	uint32_t teleport_sp_label_id = (uint32_t)-1; ///< HUD label on left controller
+
 	
 	bool pointcloud_fit_table;
 	bool color_based_on_lod;
@@ -541,6 +570,8 @@ private:
 
 	//config mode
 	int config_mode_tool = (int)ConfigModeTools::CMT_CLODParameters;
+	// config size presets: 0=original (scale 1), 1=fit 0.5m cube, 2=fit 1.0m cube, 3=fit 2.0m cube
+	int config_size_preset_index = 0;
 
 	//spacing tool parameters
 	vec3 last_measured_position = vec3(0);
@@ -694,6 +725,59 @@ private:
 	bool painter_outpaint_mode = false;  ///< false = inpaint (label inside brush), true = outpaint (label outside brush)
 	bool painter_outpaint_triggered = false; ///< edge-detection flag for outpaint single-press
 	uint32_t painter_mode_label_id = (uint32_t)-1; ///< text label showing INPAINT/OUTPAINT state
+
+	// --- LABELING_3 control point annotation (Monica et al. 2026) ---
+	struct ControlPoint {
+		uint32_t point_index; ///< global point ID (index into source_point_cloud)
+		GLint label;          ///< label to propagate from this control point
+	};
+	static constexpr int CP_K = 10;               ///< K neighbors used for KNN graph
+	ann_tree cp_ann_tree;                          ///< ANN kd-tree built from source_point_cloud
+	std::vector<ControlPoint> cp_control_points;  ///< confirmed control points placed by user
+	std::atomic<bool> cp_knn_ready{false};         ///< true when ANN tree has been built
+	bool cp_session_active = false;               ///< true once at least one CP has been placed
+	bool cp_subtractive_mode = false;             ///< false = add CP mode, true = delete nearest CP mode
+	std::future<void> cp_build_future;            ///< handle for background knn build thread
+	// ray interaction state
+	bool cp_ray_active = false;                   ///< true while right trigger is held
+	vec3 cp_hit_point;                            ///< last raycast hit position (world space)
+	bool cp_hit_valid = false;                    ///< true if ray currently hits point cloud
+	float cp_hit_t = 0.f;                         ///< ray parameter at hit
+	// live preview
+	std::vector<GLint> cp_preview_labels;         ///< Dijkstra result preview (per-point, -1 = no label)
+	void cp_update_preview();                     ///< recompute preview after CP add/delete
+	// undo support
+	std::vector<std::pair<uint32_t, GLint>> cp_undo_buffer; ///< (index, old_label) pairs for the active/preview session
+
+	/// Unified chronological undo stack shared across ALL labeling modes.
+	/// Each entry is either a CP-mode operation (cpu_labels non-empty, is_cp=true)
+	/// or a history_ptr operation (is_cp=false, one history slot consumed).
+	/// Undo always pops the newest entry, giving correct cross-mode LIFO order.
+	struct UndoEntry {
+		bool is_cp = false;
+		std::vector<std::pair<uint32_t, GLint>> cpu_labels; ///< non-empty only when is_cp==true
+	};
+	std::vector<UndoEntry> unified_undo_stack;
+	// tuning parameters
+	float cp_Omega_max = 250.0f; ///< maximum path cost for Dijkstra (in units of avg neighbor dist)
+
+	/// Which CP parameter is currently selected for right-stick adjustment.
+	/// 0 = Omega_max, 1 = alpha_p, 2 = alpha_n, 3 = alpha_c
+	int cp_selected_param = 0;
+
+	float bg_brightness = 1.0f; ///< background brightness: 0=black, 1=white, adjusted in TELEPORT mode in steps of 0.1
+	float cp_alpha_p = 1.0f;   ///< position weight in Dijkstra edge cost
+	float cp_alpha_n = 1.0f;   ///< normal weight in Dijkstra edge cost
+	float cp_alpha_c = 0.5f;   ///< color weight in Dijkstra edge cost
+	float cp_avg_spacing = 1.0f; ///< average nearest-neighbor distance (computed at build time)
+	uint32_t cp_mode_label_id = (uint32_t)-1; ///< text label showing "ADD CP" / "DEL CP"
+	uint32_t cp_omega_label_id = (uint32_t)-1; ///< text label showing current Omega max value
+
+	uint32_t instance_warning_label_id = (uint32_t)-1; ///< pop-up warning shown when instance constraint is violated
+	std::chrono::steady_clock::time_point instance_warning_hide_time;
+
+	uint32_t session_warning_label_id = (uint32_t)-1; ///< pop-up warning shown when mode change is blocked by active session
+	std::chrono::steady_clock::time_point session_warning_hide_time; ///< when to hide the warning (3s after show)
 
 	selection_shape point_pushing_shape;
 	/// store shapes here that must not be used to push points
