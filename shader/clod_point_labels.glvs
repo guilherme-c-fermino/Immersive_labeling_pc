@@ -94,13 +94,13 @@ void main()
 	
 	label_gs = label;
 			
-	int label_without_group = label >> POINT_GROUP_BITS;
-	int semantic_id = (instance_multiplier > 0) ? (label_without_group % instance_multiplier) : label_without_group;
+	int label_without_group = int(uint(label) >> 16u);
+	int semantic_id = (instance_multiplier > 0) ? (label_without_group / instance_multiplier) : label_without_group;
 	
 	float label_color_factor = float(label_without_group > 0);
 
 	if (show_instance_colors && label_without_group > 0) {
-		int instance_id = (instance_multiplier > 0) ? (label_without_group / instance_multiplier) : 0;
+		int instance_id = (instance_multiplier > 0) ? (label_without_group % instance_multiplier) : 0;
 		if (instance_id > 0) {
 			// Golden ratio hue spacing for maximum visual distinction
 			float hue = fract(float(instance_id) * 0.618033988);

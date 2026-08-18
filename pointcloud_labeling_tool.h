@@ -703,7 +703,7 @@ private:
 
 	// --- Instance labeling ---
 	int instance_counter = 1;        ///< current instance id (0 = no instance / unannotated)
-	int instance_multiplier = 1000;  ///< multiplier separating instance from semantic (label = instance*multiplier + semantic)
+	int instance_multiplier = 1000;  ///< multiplier separating instance from semantic (label = semantic*multiplier + instance)
 	bool show_instance_colors = false; ///< toggle per-instance color visualization
 	/// maps instance_id -> semantic_id to enforce one-semantic-per-instance constraint
 	std::unordered_map<int, int> instance_to_semantic;

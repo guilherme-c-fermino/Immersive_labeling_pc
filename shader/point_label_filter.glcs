@@ -29,7 +29,7 @@ void main() {
 	uint point_index = gl_GlobalInvocationID.x+batch_offset;
 	
 	int label = get_label(point_index);
-	int label_number = label >> POINT_GROUP_BITS;
+	int label_number = int(uint(label) >> 16u);
 	int label_group = label & POINT_GROUP_MASK
 	if (label_group & visible_groups) {
 		switch(mode){

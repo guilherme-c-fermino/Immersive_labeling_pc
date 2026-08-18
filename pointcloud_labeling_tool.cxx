@@ -4264,8 +4264,8 @@ void pointcloud_labeling_tool::recompute_instance_label() {
 		return;
 	}
 	// Combine instance and semantic into the label value
-	// instance 0 means "no instance" → just use semantic_id directly
-	int combined_id = (instance_counter == 0) ? picked_semantic_id : (instance_counter * instance_multiplier + picked_semantic_id);
+	// Encoding: combined_id = semantic * multiplier + instance (instance 0 = no instance distinction)
+	int combined_id = picked_semantic_id * instance_multiplier + instance_counter;
 	picked_label = make_label(combined_id, point_label_group::VISIBLE);
 	// Update the instance counter display if available
 	if (instance_counter_label_id != (uint32_t)-1) {
