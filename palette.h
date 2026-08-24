@@ -176,6 +176,29 @@ namespace vrui {
 		void set_colors(const std::vector<cgv::rgba>& palette_colors);
 		/// change visibility of the objects added over add_object(..) with pog=PaletteObjectGroup::POG_TOP_TOOLBAR 
 		void set_top_toolbar_visibility(const bool visibility);
+		/// set visibility of a single palette object by global id; safe to call with an invalid id
+		void set_object_visibility(int id, bool visible) {
+			if (id >= 0 && id < (int)palette_object_visibility.size()) {
+				palette_object_visibility[id] = visible;
+				set_palette_changed();
+			}
+		}
+		/// hide the text label associated with a palette object (safe to call with invalid id or before label is created)
+		void hide_object_label(int id) {
+			if (id >= 0 && id < (int)palette_text_label_ids.size()) {
+				int li = palette_text_label_ids[id];
+				if (li >= 0)
+					palette_text_labels.hide_label(li);
+			}
+		}
+		/// show the text label associated with a palette object (safe to call with invalid id or before label is created)
+		void show_object_label(int id) {
+			if (id >= 0 && id < (int)palette_text_label_ids.size()) {
+				int li = palette_text_label_ids[id];
+				if (li >= 0)
+					palette_text_labels.show_label(li);
+			}
+		}
 		/// indicate that the palette was changed so class internal render code can react to it
 		void set_palette_changed();
 

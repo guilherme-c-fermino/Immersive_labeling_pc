@@ -559,10 +559,8 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 	{
 		config_help_label_id = text_labels.add_label(
 				"[Config]\n"
-				"Adjust CLOD and choose point-cloud size presets\n"
-				"X/Y [Left Ctrl]: previous/next size preset\n"
-				"Stick Click [Right Ctrl]: apply selected preset\n"
-				"Presets: Original, 0.5m, 1.0m, 2.0m cube fit\n"
+				"Adjust the size of points and CLOD factor\n"
+				"Stick <Horizontal> [Left Ctrl]: adjust point size\n"
 				"Stick <Horizontal> [Right Ctrl]: adjust CLOD factor\n"
 				"Grip [Right Ctrl]: toggle point spacing probe\n"
 				"B button [Right Ctrl]: apply measured spacing\n",
@@ -898,13 +896,9 @@ bool pointcloud_labeling_tool::init(cgv::render::context& ctx)
 		text_labels.hide_label(li);
 	}*/
 	controller_label_variants[0][InteractionMode::CONFIG][CLP_TRACKPAD_CENTER].push_back(
-		controller_labels[0].add_variant(CLP_TRACKPAD_CENTER, "apply preset", controller_label_color));
+		controller_labels[0].add_variant(CLP_TRACKPAD_CENTER, "- <   point size   > +", controller_label_color));
 	controller_label_variants[1][InteractionMode::CONFIG][CLP_TRACKPAD_CENTER].push_back(
-		controller_labels[1].add_variant(CLP_TRACKPAD_CENTER, "apply\npreset", controller_label_color));
-	controller_label_variants[0][InteractionMode::CONFIG][CLP_MENU_BUTTON].push_back(
-		controller_labels[0].add_variant(CLP_MENU_BUTTON, "next\npreset", controller_label_color));
-	controller_label_variants[0][InteractionMode::CONFIG][CLP_SIDE].push_back(
-		controller_labels[0].add_variant(CLP_SIDE, "prev\npreset", controller_label_color));
+		controller_labels[1].add_variant(CLP_TRACKPAD_CENTER, "- <   CLOD factor  > +", controller_label_color));
 	apply_spacing_label_variant = controller_labels[1].add_variant(CLP_MENU_BUTTON, "apply spacing", controller_label_color);
 	controller_label_variants[1][InteractionMode::CONFIG][CLP_MENU_BUTTON].push_back(apply_spacing_label_variant);
 
@@ -1111,33 +1105,6 @@ void pointcloud_labeling_tool::init_frame(cgv::render::context& ctx)
 			text_labels.show_label(cp_omega_label_id);
 		else
 			text_labels.hide_label(cp_omega_label_id);
-	}
-
-	// Explicitly gate CONFIG-only UI labels to CONFIG mode.
-	// This prevents stale visibility when switching back to other modes.
-	if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) {
-		if (clod_parameters_label_id != -1 && !spacing_tool_enabled)
-			text_labels.show_label(clod_parameters_label_id);
-		else if (clod_parameters_label_id != -1)
-			text_labels.hide_label(clod_parameters_label_id);
-
-		if (spacing_tool_label_id != -1 && spacing_tool_enabled)
-			text_labels.show_label(spacing_tool_label_id);
-		else if (spacing_tool_label_id != -1)
-			text_labels.hide_label(spacing_tool_label_id);
-
-		if (config_help_label_id != -1 && !spacing_tool_enabled)
-			text_labels.show_label(config_help_label_id);
-		else if (config_help_label_id != -1)
-			text_labels.hide_label(config_help_label_id);
-	}
-	else {
-		if (clod_parameters_label_id != -1)
-			text_labels.hide_label(clod_parameters_label_id);
-		if (spacing_tool_label_id != -1)
-			text_labels.hide_label(spacing_tool_label_id);
-		if (config_help_label_id != -1)
-			text_labels.hide_label(config_help_label_id);
 	}
 	// Show SP HUD label only in TELEPORT mode
 	if (teleport_sp_label_id != (uint32_t)-1) {
@@ -2179,11 +2146,21 @@ void pointcloud_labeling_tool::build_palette()
 	
 	//palette picking function
 	std::function<void(picked_object)> palette_picking_func = [this](picked_object po) {
+		// Debounce: ignore rapid successive picks within 200 ms to prevent accidental double-clicks
+		static auto s_last_pick = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+		auto s_now = std::chrono::steady_clock::now();
+		if (std::chrono::duration<double>(s_now - s_last_pick).count() < 0.20)
+			return;
+		s_last_pick = s_now;
+
+		static constexpr int num_interactive_palette_slots = 25;
 		int ix = po.id();
 		paste_pointcloud_follow_controller = false;
 
 		switch (po.object_group()) {
 		case vrui::POG_NONE: { // it's one of the 25 spheres from the center
+			if (ix < 0 || ix >= num_interactive_palette_slots)
+				break;
 			picked_sphere_index = ix;
 			point_selection_group_mask = default_point_selection_group_mask;
 			point_selection_exclude_group_mask = default_point_selection_exclude_group_mask;
@@ -2229,6 +2206,259 @@ void pointcloud_labeling_tool::build_palette()
 				point_editing_tool = pallete_tool::PT_BRUSH;
 			}
 			update_controller_labels(); //need to update grip label since editing tool may have changed
+			break;
+		}
+		case vrui::POG_LEFT_TOOLBAR: {
+			// Right-side shortcut buttons, only active in labeling modes
+			if (!is_labeling_mode(interaction_mode))
+				break;
+			int pos = po.position_in_group();
+
+			// Paint mode (LABELING) exclusive buttons: rows 1 and 2
+			if ((InteractionMode)interaction_mode == InteractionMode::LABELING) {
+				static constexpr float palette_size_step = 0.005f; // larger step than joystick
+				if (pos == 0) {
+					// +SIZE
+					switch (point_selection_shape) {
+					case SS_SPHERE:   sphere_style_rhand.radius = std::max(0.005f, sphere_style_rhand.radius + palette_size_step); break;
+					case SS_CUBOID:   cube_length = std::max(0.005f, cube_length + palette_size_step); cube_rhand = box3(vec3(-cube_length, -cube_length, -cube_length), vec3(cube_length, cube_length, cube_length)); break;
+					case SS_CONE:     cone_height = std::max(0.005f, cone_height + palette_size_step); break;
+					case SS_CYLINDER: cylinder_radius = std::max(0.005f, cylinder_radius + palette_size_step); cylinder_height = cylinder_radius * 3.0f; break;
+					default: break;
+					}
+				} else if (pos == 1) {
+					// -SIZE
+					switch (point_selection_shape) {
+					case SS_SPHERE:   sphere_style_rhand.radius = std::max(0.005f, sphere_style_rhand.radius - palette_size_step); break;
+					case SS_CUBOID:   cube_length = std::max(0.005f, cube_length - palette_size_step); cube_rhand = box3(vec3(-cube_length, -cube_length, -cube_length), vec3(cube_length, cube_length, cube_length)); break;
+					case SS_CONE:     cone_height = std::max(0.005f, cone_height - palette_size_step); break;
+					case SS_CYLINDER: cylinder_radius = std::max(0.005f, cylinder_radius - palette_size_step); cylinder_height = cylinder_radius * 3.0f; break;
+					default: break;
+					}
+				} else if (pos == 2) {
+					// IN: set inpaint mode directly
+					painter_outpaint_mode = false;
+					if (painter_mode_label_id != (uint32_t)-1) {
+						text_labels.update_label_text(painter_mode_label_id, "Mode: INPAINT");
+						text_labels.place_label(painter_mode_label_id, vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+					}
+					update_controller_labels();
+				} else if (pos == 3) {
+					// OUT: set outpaint mode directly
+					painter_outpaint_mode = true;
+					if (painter_mode_label_id != (uint32_t)-1) {
+						text_labels.update_label_text(painter_mode_label_id, "Mode: OUTPAINT");
+						text_labels.place_label(painter_mode_label_id, vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+					}
+					update_controller_labels();
+				}
+			}
+
+			// Sculpt mode (LABELING_2) exclusive buttons: rows 1-2 (+SZ/-SZ/IN/OUT) and row 6 (COMMIT/CANCEL)
+			if ((InteractionMode)interaction_mode == InteractionMode::LABELING_2) {
+				static constexpr float palette_size_step = 0.005f;
+				if (pos == 0) {
+					// +SIZE
+					switch (point_selection_shape) {
+					case SS_SPHERE:   sphere_style_rhand.radius = std::max(0.005f, sphere_style_rhand.radius + palette_size_step); break;
+					case SS_CUBOID:   cube_length = std::max(0.005f, cube_length + palette_size_step); cube_rhand = box3(vec3(-cube_length, -cube_length, -cube_length), vec3(cube_length, cube_length, cube_length)); break;
+					case SS_CONE:     cone_height = std::max(0.005f, cone_height + palette_size_step); break;
+					case SS_CYLINDER: cylinder_radius = std::max(0.005f, cylinder_radius + palette_size_step); cylinder_height = cylinder_radius * 3.0f; break;
+					default: break;
+					}
+				} else if (pos == 1) {
+					// -SIZE
+					switch (point_selection_shape) {
+					case SS_SPHERE:   sphere_style_rhand.radius = std::max(0.005f, sphere_style_rhand.radius - palette_size_step); break;
+					case SS_CUBOID:   cube_length = std::max(0.005f, cube_length - palette_size_step); cube_rhand = box3(vec3(-cube_length, -cube_length, -cube_length), vec3(cube_length, cube_length, cube_length)); break;
+					case SS_CONE:     cone_height = std::max(0.005f, cone_height - palette_size_step); break;
+					case SS_CYLINDER: cylinder_radius = std::max(0.005f, cylinder_radius - palette_size_step); cylinder_height = cylinder_radius * 3.0f; break;
+					default: break;
+					}
+				} else if (pos == 2) {
+					// IN: set incrop mode directly
+					sculpt_incrop_mode = true;
+					if (sculpt_mode_label_id != (uint32_t)-1) {
+						text_labels.update_label_text(sculpt_mode_label_id, "Mode: INCROP");
+						text_labels.place_label(sculpt_mode_label_id, vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+					}
+					update_controller_labels();
+				} else if (pos == 3) {
+					// OUT: set outcrop mode directly
+					sculpt_incrop_mode = false;
+					if (sculpt_mode_label_id != (uint32_t)-1) {
+						text_labels.update_label_text(sculpt_mode_label_id, "Mode: OUTCROP");
+						text_labels.place_label(sculpt_mode_label_id, vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+					}
+					update_controller_labels();
+				} else if (pos == 10) {
+					// COMMIT: confirm sculpt label (mirrors right stick click in LABELING_2)
+					if (point_editing_tool == pallete_tool::PT_BRUSH && sculpt_marker_applied) {
+						if (!check_instance_constraint()) {
+							if (instance_warning_label_id != (uint32_t)-1) {
+								text_labels.show_label(instance_warning_label_id);
+								instance_warning_hide_time = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+							}
+						} else {
+							point_server_ptr->ref_interaction_settings() = point_cloud_interaction_settings;
+							point_server_ptr->label_all_points(picked_label, (GLint)point_label_group::VISIBLE, 0, point_label_operation::REPLACE);
+							point_server_ptr->ref_interaction_settings().enable_history = false;
+							GLint restore_visible = make_label(0, (uint32_t)point_label_group::VISIBLE);
+							point_server_ptr->label_all_points(restore_visible, SCULPT_MARKER_BIT, 0, point_label_operation::OR);
+							GLint clear_marker = ~make_label(0, (uint32_t)SCULPT_MARKER_BIT);
+							point_server_ptr->label_all_points(clear_marker, (GLint)point_label_group::GROUP_MASK, 0, point_label_operation::AND);
+							if (point_cloud_interaction_settings.enable_history) {
+								history_ptr->add_rollback_operation();
+								UndoEntry _he; _he.is_cp = false;
+								unified_undo_stack.push_back(std::move(_he));
+							}
+							if (instance_counter > 0 && picked_semantic_id > 0)
+								instance_to_semantic[instance_counter] = picked_semantic_id;
+							sculpt_marker_applied = false;
+							instance_counter++;
+							recompute_instance_label();
+						}
+					}
+				} else if (pos == 11) {
+					// CANCEL: discard sculpt session (mirrors left stick click in LABELING_2)
+					if (point_editing_tool == pallete_tool::PT_BRUSH && sculpt_marker_applied) {
+						point_server_ptr->ref_interaction_settings() = point_cloud_interaction_settings;
+						point_server_ptr->ref_interaction_settings().enable_history = false;
+						GLint restore_visible = make_label(0, (uint32_t)point_label_group::VISIBLE);
+						point_server_ptr->label_all_points(restore_visible, SCULPT_MARKER_BIT, 0, point_label_operation::OR);
+						GLint clear_marker = ~make_label(0, (uint32_t)SCULPT_MARKER_BIT);
+						point_server_ptr->label_all_points(clear_marker, (GLint)point_label_group::GROUP_MASK, 0, point_label_operation::AND);
+						if (point_cloud_interaction_settings.enable_history) {
+							history_ptr->add_rollback_operation();
+							UndoEntry _he; _he.is_cp = false;
+							unified_undo_stack.push_back(std::move(_he));
+						}
+						sculpt_marker_applied = false;
+					}
+				}
+			}
+
+			// Control Points mode (LABELING_3) exclusive buttons: row 1 (+VAL/PARAM_TOGGLE/-VAL), row 2 (ADD P/DEL P), row 6 (COMMIT/CANCEL)
+			if ((InteractionMode)interaction_mode == InteractionMode::LABELING_3) {
+				if (pos == 0) {
+					// +VALUE: increase selected CP parameter
+					switch (cp_selected_param) {
+					case 0: cp_Omega_max = std::max(10.f, cp_Omega_max + 10.f); break;
+					case 1: cp_alpha_p += 0.1f; break;
+					case 2: cp_alpha_n += 0.1f; break;
+					case 3: cp_alpha_c += 0.1f; break;
+					}
+					update_cp_params_label();
+					if (cp_session_active && !cp_control_points.empty()) cp_update_preview();
+				} else if (pos == 1) {
+					// -VALUE: decrease selected CP parameter
+					switch (cp_selected_param) {
+					case 0: cp_Omega_max = std::max(10.f, cp_Omega_max - 10.f); break;
+					case 1: cp_alpha_p = std::max(0.f, cp_alpha_p - 0.1f); break;
+					case 2: cp_alpha_n = std::max(0.f, cp_alpha_n - 0.1f); break;
+					case 3: cp_alpha_c = std::max(0.f, cp_alpha_c - 0.1f); break;
+					}
+					update_cp_params_label();
+					if (cp_session_active && !cp_control_points.empty()) cp_update_preview();
+				} else if (pos == 12) {
+					// PARAM TOGGLE: cycle to next CP parameter
+					cp_selected_param = (cp_selected_param + 1) % 4;
+					update_cp_params_label(); // also updates palette button label
+				} else if (pos == 2) {
+					// ADD P: switch to additive CP placement mode
+					cp_subtractive_mode = false;
+					if (cp_mode_label_id != (uint32_t)-1) {
+						text_labels.update_label_text(cp_mode_label_id, "Mode: ADD CP");
+						text_labels.place_label(cp_mode_label_id, vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+					}
+					update_controller_labels();
+				} else if (pos == 3) {
+					// DEL P: switch to subtractive CP deletion mode
+					cp_subtractive_mode = true;
+					if (cp_mode_label_id != (uint32_t)-1) {
+						text_labels.update_label_text(cp_mode_label_id, "Mode: DEL CP");
+						text_labels.place_label(cp_mode_label_id, vec3(-0.06, 0.0, -0.02), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+					}
+					update_controller_labels();
+				} else if (pos == 10) {
+					// COMMIT: confirm CP session (mirrors right stick click in LABELING_3)
+					if (!cp_control_points.empty()) {
+						if (!check_instance_constraint()) {
+							if (instance_warning_label_id != (uint32_t)-1) {
+								text_labels.show_label(instance_warning_label_id);
+								instance_warning_hide_time = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+							}
+						} else {
+							if (instance_counter > 0 && picked_semantic_id > 0)
+								instance_to_semantic[instance_counter] = picked_semantic_id;
+							cp_control_points.clear();
+							cp_session_active = false;
+							cp_preview_labels.clear();
+							{
+								UndoEntry _e; _e.is_cp = true;
+								_e.cpu_labels = std::move(cp_undo_buffer);
+								unified_undo_stack.push_back(std::move(_e));
+								cp_undo_buffer.clear();
+							}
+							cp_ray_active = false;
+							cp_hit_valid = false;
+							instance_counter++;
+							recompute_instance_label();
+							std::cout << "[CP] Palette COMMIT. Instance counter -> " << instance_counter << "\n";
+						}
+					} else {
+						std::cout << "[CP] Nothing to commit (no control points placed).\n";
+					}
+				} else if (pos == 11) {
+					// CANCEL: discard CP session (mirrors left stick click in LABELING_3)
+					if (!cp_undo_buffer.empty()) {
+						auto& chunked_points_cp = point_server_ptr->ref_chunks();
+						auto& point_labels_cp = chunked_points_cp.get_attribute(label_attribute_id);
+						GLint* labels_cp = point_labels_cp.data<GLint>();
+						for (auto& p : cp_undo_buffer) labels_cp[p.first] = p.second;
+						point_labels_cp.upload();
+						cp_undo_buffer.clear();
+					}
+					cp_control_points.clear();
+					cp_session_active = false;
+					cp_ray_active = false;
+					cp_hit_valid = false;
+					std::cout << "[CP] Palette CANCEL: all control points discarded.\n";
+				}
+			}
+
+			// Common buttons for all labeling modes (rows 3-5)
+			if (pos == 4) {
+				// UNDO
+				rollback_last_operation(*get_context());
+			}
+			else if (pos == 5) {
+				// SEM: switch to semantic color view
+				show_instance_colors = false;
+				if (instance_counter_label_id != (uint32_t)-1) {
+					text_labels.update_label_text(instance_counter_label_id, "Instance: " + std::to_string(instance_counter));
+					text_labels.place_label(instance_counter_label_id, left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+				}
+			}
+			else if (pos == 6) {
+				// INST: switch to instance color view
+				show_instance_colors = true;
+				if (instance_counter_label_id != (uint32_t)-1) {
+					text_labels.update_label_text(instance_counter_label_id, "Instance: " + std::to_string(instance_counter) + " [VIS]");
+					text_labels.place_label(instance_counter_label_id, left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+				}
+			}
+			else if (pos == 7) {
+				// +COUNT: increment instance counter
+				instance_counter++;
+				recompute_instance_label();
+			}
+			else if (pos == 9) {
+				// -COUNT: decrement instance counter (min 0)
+				instance_counter = std::max(0, instance_counter - 1);
+				recompute_instance_label();
+			}
+			// pos 0-3 (paint-mode above or ignored), pos 8 (display, read-only), pos 10-11 (empty): do nothing
 			break;
 		}
 		}
@@ -2872,10 +3102,7 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				// Keep left VR_A free for future functionality.
 			case vr::VR_MENU:
 				if (vrke.get_controller_index() == 0) {
-					if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) {
-						cycle_config_size_preset(+1);
-					}
-					else if (is_labeling_mode(interaction_mode)) {
+					if (is_labeling_mode(interaction_mode)) {
 						// Block undo during active sculpt session — use cancel button instead
 						bool block_undo = ((InteractionMode)interaction_mode == InteractionMode::LABELING_2 && sculpt_marker_applied)
 							|| ((InteractionMode)interaction_mode == InteractionMode::LABELING_3 && cp_session_active);
@@ -2929,11 +3156,8 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 			case vr::VR_A:
 				if (vrke.get_controller_index() == 0)
 				{
-					if ((InteractionMode)interaction_mode == InteractionMode::CONFIG) {
-						cycle_config_size_preset(-1);
-					}
 					// Left A / VR_A: toggle instance color visualization
-					else if (is_labeling_mode(interaction_mode)) {
+					if (is_labeling_mode(interaction_mode)) {
 						show_instance_colors = !show_instance_colors;
 						// Update label to show VIS indicator
 						if (instance_counter_label_id != (uint32_t)-1) {
@@ -3068,9 +3292,6 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 
 				break;
 			case vr::VR_INPUT0:
-				if (vrke.get_controller_index() == 1 && (InteractionMode)interaction_mode == InteractionMode::CONFIG) {
-					apply_config_size_preset();
-				}
 				// Left stick click in TELEPORT: clear all set points
 				if (vrke.get_controller_index() == 0 && (InteractionMode)interaction_mode == InteractionMode::TELEPORT) {
 					teleport_set_points.clear();
@@ -4261,6 +4482,11 @@ void pointcloud_labeling_tool::recompute_instance_label() {
 			text_labels.place_label(instance_counter_label_id,
 				left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
 		}
+		{
+			int disp_id = palette.get_instance_display_id();
+			if (palette.object_id_is_valid(disp_id))
+				palette.set_label_text(disp_id, std::to_string(instance_counter));
+		}
 		return;
 	}
 	// Combine instance and semantic into the label value
@@ -4274,6 +4500,11 @@ void pointcloud_labeling_tool::recompute_instance_label() {
 		text_labels.update_label_text(instance_counter_label_id, text);
 		text_labels.place_label(instance_counter_label_id,
 			left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+	}
+	{
+		int disp_id = palette.get_instance_display_id();
+		if (palette.object_id_is_valid(disp_id))
+			palette.set_label_text(disp_id, std::to_string(instance_counter));
 	}
 }
 
@@ -4677,6 +4908,21 @@ void pointcloud_labeling_tool::update_cp_params_label() {
 	text_labels.update_label_text(cp_omega_label_id, text);
 	text_labels.place_label(cp_omega_label_id,
 		vec3(-0.06f, 0.0f, -0.06f), tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
+	// Also update the palette param-toggle button (pos 12) if it exists
+	{
+		int id = palette.get_shortcut_id(12);
+		if (palette.object_id_is_valid(id)) {
+			char buf[48];
+			if (cp_selected_param == 0)
+				std::snprintf(buf, sizeof(buf), "%d/4\n%s:\n%d", cp_selected_param + 1, names[cp_selected_param], (int)cp_Omega_max);
+			else {
+				float val = (cp_selected_param == 1) ? cp_alpha_p : (cp_selected_param == 2) ? cp_alpha_n : cp_alpha_c;
+				std::snprintf(buf, sizeof(buf), "%d/4\n%s:\n%.2f", cp_selected_param + 1, names[cp_selected_param], val);
+			}
+			palette.set_label_text(id, buf);
+			palette.set_palette_changed();
+		}
+	}
 }
 
 void pointcloud_labeling_tool::cp_update_preview() {
@@ -5573,80 +5819,9 @@ void pointcloud_labeling_tool::update_clod_parameters_label()
 	std::array<char, 512> buff;
 	auto& style = source_point_cloud.ref_render_style();
 	std::snprintf(buff.data(), buff.size(), clod_parameters_template_str.data(), style.CLOD, style.scale, style.spacing, style.pointSize, style.min_millimeters);
-	std::string cfg_text = std::string(buff.data());
-	cfg_text += "Size Preset: " + get_config_size_preset_name() + "\n";
-	cfg_text += "X/Y [Left]: prev/next preset\n";
-	cfg_text += "Stick Click [Right]: apply preset\n";
-	text_labels.update_label_text(clod_parameters_label_id, cfg_text);
+	text_labels.update_label_text(clod_parameters_label_id, std::string(buff.data()));
 	text_labels.place_label(clod_parameters_label_id,
 		left_tool_label_offset, tool_label_ori, CS_LEFT_CONTROLLER, LA_RIGHT, tool_label_scale);
-}
-
-void pointcloud_labeling_tool::cycle_config_size_preset(int direction)
-{
-	static constexpr int kPresetCount = 4;
-	if (direction == 0)
-		return;
-	config_size_preset_index = (config_size_preset_index + (direction > 0 ? 1 : -1) + kPresetCount) % kPresetCount;
-	update_clod_parameters_label();
-	std::cout << "[Config] Size preset selected: " << get_config_size_preset_name() << std::endl;
-}
-
-std::string pointcloud_labeling_tool::get_config_size_preset_name() const
-{
-	switch (config_size_preset_index) {
-	case 0: return "Original";
-	case 1: return "Normalized 0.5m";
-	case 2: return "Normalized 1.0m";
-	case 3: return "Normalized 2.0m";
-	default: return "Original";
-	}
-}
-
-float pointcloud_labeling_tool::compute_scale_for_preset(int preset_index) const
-{
-	if (preset_index <= 0)
-		return 1.0f;
-
-	const size_t N = source_point_cloud.get_nr_points();
-	if (N == 0)
-		return 1.0f;
-
-	vec3 min_p = source_point_cloud.pnt(0);
-	vec3 max_p = source_point_cloud.pnt(0);
-	for (size_t i = 1; i < N; ++i) {
-		const vec3& p = source_point_cloud.pnt(i);
-		for (int k = 0; k < 3; ++k) {
-			if (p(k) < min_p(k)) min_p(k) = p(k);
-			if (p(k) > max_p(k)) max_p(k) = p(k);
-		}
-	}
-
-	vec3 extent = max_p - min_p;
-	float max_extent = std::max(extent(0), std::max(extent(1), extent(2)));
-	if (max_extent < 1e-6f)
-		return 1.0f;
-
-	float target_size = 1.0f;
-	switch (preset_index) {
-	case 1: target_size = 0.5f; break;
-	case 2: target_size = 1.0f; break;
-	case 3: target_size = 2.0f; break;
-	default: target_size = 1.0f; break;
-	}
-	return target_size / max_extent;
-}
-
-void pointcloud_labeling_tool::apply_config_size_preset()
-{
-	if (source_point_cloud.get_nr_points() == 0)
-		return;
-
-	float new_scale = compute_scale_for_preset(config_size_preset_index);
-	rescale_point_cloud(new_scale);
-	update_clod_parameters_label();
-	std::cout << "[Config] Applied size preset: " << get_config_size_preset_name()
-		<< " (scale=" << new_scale << ")" << std::endl;
 }
 
 ///
@@ -5991,6 +6166,65 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 		text_labels.update_label_text(interaction_mode_label_id, name);
 		text_labels.place_label(interaction_mode_label_id,
 			vec3(0.0, 0.0, -0.04), tool_label_ori, CS_LEFT_CONTROLLER, LA_CENTER, tool_label_scale);
+	}
+
+	// Update mode-exclusive shortcut button labels and visibility
+	{
+		const bool in_paint  = (im == InteractionMode::LABELING);
+		const bool in_sculpt = (im == InteractionMode::LABELING_2);
+		const bool in_cp     = (im == InteractionMode::LABELING_3);
+		const bool show_size_inout = (in_paint || in_sculpt);
+		// Row 1 pos 0: +SZ (paint/sculpt), +VAL (CP)
+		// Row 1 pos 1: -SZ (paint/sculpt), -VAL (CP)
+		// Row 2 pos 2: IN (paint/sculpt), ADD P (CP)
+		// Row 2 pos 3: OUT (paint/sculpt), DEL P (CP)
+		const char* row_labels[4] = {
+			in_cp ? "+VAL" : (show_size_inout ? "+SZ"  : ""),
+			in_cp ? "-VAL" : (show_size_inout ? "-SZ"  : ""),
+			in_cp ? "ADD P": (show_size_inout ? "IN"   : ""),
+			in_cp ? "DEL P": (show_size_inout ? "OUT"  : "")
+		};
+		for (int p = 0; p < 4; ++p) {
+			int id = palette.get_shortcut_id(p);
+			if (palette.object_id_is_valid(id))
+				palette.set_label_text(id, row_labels[p]);
+		}
+		// Row 1 pos 12: CP param toggle — visible only in CP mode
+		{
+			int id = palette.get_shortcut_id(12);
+			palette.set_object_visibility(id, in_cp);
+			if (in_cp && palette.object_id_is_valid(id)) {
+				static const char* pnames[4] = { "Omega", "alpha_p", "alpha_n", "alpha_c" };
+				char buf[48];
+				if (cp_selected_param == 0)
+					std::snprintf(buf, sizeof(buf), "%d/4\n%s: %d", cp_selected_param + 1, pnames[cp_selected_param], (int)cp_Omega_max);
+				else {
+					float val = (cp_selected_param == 1) ? cp_alpha_p : (cp_selected_param == 2) ? cp_alpha_n : cp_alpha_c;
+					std::snprintf(buf, sizeof(buf), "%d/4\n%s: %.2f", cp_selected_param + 1, pnames[cp_selected_param], val);
+				}
+				palette.set_label_text(id, buf); // set_label_text also calls show_label internally
+			} else {
+				palette.hide_object_label(id); // ensure text label is hidden when not in CP mode
+			}
+		}
+		// Row 6 (positions 10-11): hidden in paint, COMMIT/CANCEL in sculpt and CP
+		{
+			const bool show_row6 = !in_paint;
+			const bool row6_active = (in_sculpt || in_cp);
+			const char* r6_labels[2] = { row6_active ? "COMMIT" : "", row6_active ? "CANCEL" : "" };
+			for (int i = 0; i < 2; ++i) {
+				int id = palette.get_shortcut_id(10 + i);
+				palette.set_object_visibility(id, show_row6);
+				if (!show_row6) {
+					palette.hide_object_label(id); // prevent empty-string baseline from showing in paint mode
+				} else if (row6_active && palette.object_id_is_valid(id)) {
+					palette.set_label_text(id, r6_labels[i]); // set_label_text also calls show_label
+				} else {
+					palette.hide_object_label(id); // visible but no active label (other labeling modes)
+				}
+			}
+		}
+		palette.set_palette_changed();
 	}
 }
 
