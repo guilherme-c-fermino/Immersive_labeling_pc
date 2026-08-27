@@ -29,7 +29,7 @@ namespace vrui {
 		}
 
 		// Right-side shortcut buttons (12 total, position_in_group 0-11 within POG_LEFT_TOOLBAR)
-		static const cgv::rgba placeholder_color(0.0f, 0.0f, 0.0f, 1.0f);
+		static const cgv::rgba placeholder_color(0.0f, 0.0f, 0.0f, 0.5f);
 		const int first_placeholder_x = off + 1; // immediately to the right of the main grid
 		int sp = 0; // shortcut position counter, fills shortcut_ids in build order
 

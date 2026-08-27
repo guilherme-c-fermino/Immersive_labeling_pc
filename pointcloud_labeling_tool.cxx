@@ -2466,6 +2466,49 @@ void pointcloud_labeling_tool::build_palette()
 	
 	//build palette
 	palette.build(PALETTE_COLOR_MAPPING);
+	{
+		auto resolve_button_icon = [&](const std::string& file_name) -> std::string {
+			std::string p = cgv::base::find_data_file("buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
+			if (p.empty())
+				p = cgv::base::find_data_file("Immersive_labeling_pc/buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
+			if (p.empty())
+				p = "buttons_images/" + file_name;
+			return p;
+		};
+
+		const std::string blank_image = resolve_button_icon("BLANK.png");
+		palette.set_buttons_image_file(blank_image);
+
+		const std::string plus_image   = resolve_button_icon("PLUS_BUTT.png");
+		const std::string minus_image  = resolve_button_icon("MINUS_BUTT.png");
+		const std::string undo_image   = resolve_button_icon("UNDO_BUTT.png");
+		const std::string sem_image    = resolve_button_icon("SEM_BUTT.png");
+		const std::string inst_image   = resolve_button_icon("INST_BUTT.png");
+		const std::string accept_image = resolve_button_icon("ACCEPT_BUTT.png");
+		const std::string cancel_image = resolve_button_icon("CANCEL_BUTT.png");
+
+		// Enable icons on all shortcut buttons (rows 1-6).
+		const int icon_positions[] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 };
+		for (int p : icon_positions) {
+			int id = palette.get_shortcut_id(p);
+			if (palette.object_id_is_valid(id))
+				palette.set_object_uses_button_image(id, true);
+		}
+
+		// Static icon mapping independent of interaction mode.
+		{
+			int id;
+			id = palette.get_shortcut_id(4);  if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, undo_image);
+			id = palette.get_shortcut_id(5);  if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, sem_image);
+			id = palette.get_shortcut_id(6);  if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, inst_image);
+			id = palette.get_shortcut_id(7);  if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, plus_image);
+			id = palette.get_shortcut_id(8);  if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, blank_image); // instance counter display
+			id = palette.get_shortcut_id(9);  if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, minus_image);
+			id = palette.get_shortcut_id(10); if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, accept_image);
+			id = palette.get_shortcut_id(11); if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, cancel_image);
+			id = palette.get_shortcut_id(12); if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, blank_image);
+		}
+	}
 	palette.set_function(palette_picking_func);
 
 	static constexpr double toolbar_gap = -0.013;
@@ -6174,6 +6217,24 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 		const bool in_sculpt = (im == InteractionMode::LABELING_2);
 		const bool in_cp     = (im == InteractionMode::LABELING_3);
 		const bool show_size_inout = (in_paint || in_sculpt);
+
+		auto resolve_button_icon = [&](const std::string& file_name) -> std::string {
+			std::string p = cgv::base::find_data_file("buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
+			if (p.empty())
+				p = cgv::base::find_data_file("Immersive_labeling_pc/buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
+			if (p.empty())
+				p = "buttons_images/" + file_name;
+			return p;
+		};
+		const std::string size_up_image   = resolve_button_icon("SIZE_UP_BUTT.png");
+		const std::string size_down_image = resolve_button_icon("SIZE_DOWN_BUTT.png");
+		const std::string plus_image      = resolve_button_icon("PLUS_BUTT.png");
+		const std::string minus_image     = resolve_button_icon("MINUS_BUTT.png");
+		const std::string in_image        = resolve_button_icon("IN_BUTT.png");
+		const std::string out_image       = resolve_button_icon("OUT_BUTT.png");
+		const std::string cp_add_image    = resolve_button_icon("CP_ADD.png");
+		const std::string cp_del_image    = resolve_button_icon("CP_DEL.png");
+
 		// Row 1 pos 0: +SZ (paint/sculpt), +VAL (CP)
 		// Row 1 pos 1: -SZ (paint/sculpt), -VAL (CP)
 		// Row 2 pos 2: IN (paint/sculpt), ADD P (CP)
@@ -6186,8 +6247,17 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 		};
 		for (int p = 0; p < 4; ++p) {
 			int id = palette.get_shortcut_id(p);
-			if (palette.object_id_is_valid(id))
+			if (palette.object_id_is_valid(id)) {
 				palette.set_label_text(id, row_labels[p]);
+				if (p == 0)
+					palette.set_object_button_image_file(id, in_cp ? plus_image : size_up_image);
+				else if (p == 1)
+					palette.set_object_button_image_file(id, in_cp ? minus_image : size_down_image);
+				else if (p == 2)
+					palette.set_object_button_image_file(id, in_cp ? cp_add_image : in_image);
+				else
+					palette.set_object_button_image_file(id, in_cp ? cp_del_image : out_image);
+			}
 		}
 		// Row 1 pos 12: CP param toggle — visible only in CP mode
 		{

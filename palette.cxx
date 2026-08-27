@@ -22,6 +22,12 @@ namespace vrui {
 		point_cloud_style.screen_aligned = true;
 		point_cloud_style.point_size = 0.1;
 		point_cloud_style.measure_point_size_in_pixel = false;
+		p_icon_style.texture_mode = cgv::render::RTM_REPLACE;
+		p_icon_style.blend_rectangles = true;
+		p_icon_style.pixel_blend = 1.0f;
+		p_icon_style.default_depth_offset = -1e-4f;
+		p_icon_style.surface_color = cgv::rgb(1.0f, 1.0f, 1.0f);
+		p_icon_style.surface_opacity = 1.0f;
 		palette_changed = true;
 		last_triggered_object = -1;
 
@@ -41,6 +47,10 @@ namespace vrui {
 		palette_object_data.emplace_back(nullptr);
 		palette_object_visibility.emplace_back(true);
 		palette_object_groups.push_back(pog);
+		palette_object_use_button_image.push_back(false);
+		palette_object_button_image_files.emplace_back("");
+		palette_object_button_textures.emplace_back("uint8[R,G,B,A]");
+		palette_object_button_texture_needs_upload.emplace_back(false);
 		palette_text_label_ids.push_back(-1);
 		switch (pog) {
 		case POG_TOP_TOOLBAR:
@@ -185,6 +195,7 @@ namespace vrui {
 		palette_plane_renderer.init(ctx);
 		palette_box_wire_renderer.init(ctx);
 		palette_box_plane_renderer.init(ctx);
+		palette_icon_renderer.init(ctx);
 
 		palette_spheres.init(ctx);
 		palette_boxes.init(ctx);
@@ -236,6 +247,31 @@ namespace vrui {
 		cgv::render::ref_point_renderer(ctx, 1);
 	}
 
+	void palette::set_buttons_image_file(const std::string& file_name)
+	{
+		if (palette_button_image_file == file_name)
+			return;
+		palette_button_image_file = file_name;
+		palette_button_texture_needs_upload = true;
+	}
+
+	void palette::set_object_uses_button_image(int id, bool use_image)
+	{
+		if (id < 0 || id >= (int)palette_object_use_button_image.size())
+			return;
+		palette_object_use_button_image[id] = use_image;
+	}
+
+	void palette::set_object_button_image_file(int id, const std::string& file_name)
+	{
+		if (id < 0 || id >= (int)palette_object_button_image_files.size())
+			return;
+		if (palette_object_button_image_files[id] == file_name)
+			return;
+		palette_object_button_image_files[id] = file_name;
+		palette_object_button_texture_needs_upload[id] = true;
+	}
+
 	cgv::rgba& palette::object_color(const int id)
 	{
 		return palette_object_colors[id];
@@ -278,6 +314,13 @@ namespace vrui {
 		palette_plane_renderer.clear(ctx);
 		palette_box_wire_renderer.clear(ctx);
 		palette_box_plane_renderer.clear(ctx);
+		palette_icon_renderer.clear(ctx);
+		if (palette_button_texture.is_created())
+			palette_button_texture.destruct(ctx);
+		for (auto& tex : palette_object_button_textures) {
+			if (tex.is_created())
+				tex.destruct(ctx);
+		}
 
 		glDeleteBuffers(1, &sphere_frame_point_buffer);
 		glDeleteBuffers(1, &sphere_frame_offset_buffer);
@@ -348,6 +391,8 @@ namespace vrui {
 
 	void palette::render_palette(cgv::render::context& ctx, const cgv::mat34& pose) {
 		static const quat object_tilt = quat(vec3(0, 0, 1), cgv::math::deg2rad(-37.5f));
+		static const quat icon_rotation = quat(vec3(1, 0, 0), cgv::math::deg2rad(-90.0f));
+		static const vec3 icon_offset(0.0f, 0.008f, 0.0f);
 
 		
 
@@ -454,6 +499,19 @@ namespace vrui {
 			transform.set_row(i, pose.row(i));
 		ctx.set_modelview_matrix(ctx.get_modelview_matrix() * transform);
 
+		if (palette_button_texture_needs_upload && !palette_button_image_file.empty()) {
+			if (palette_button_texture.is_created())
+				palette_button_texture.destruct(ctx);
+			palette_button_texture = cgv::render::texture("uint8[R,G,B,A]");
+			palette_button_texture.set_min_filter(cgv::render::TF_LINEAR);
+			palette_button_texture.set_mag_filter(cgv::render::TF_LINEAR);
+			if (!palette_button_texture.create_from_image(ctx, palette_button_image_file)) {
+				std::cerr << "[palette] Failed to load button image: " << palette_button_image_file << "\n";
+				palette_button_texture.destruct(ctx);
+			}
+			palette_button_texture_needs_upload = false;
+		}
+
 		if (box_indices.size())
 			palette_box_renderer.render(ctx, 0, box_indices.size());
 
@@ -467,6 +525,57 @@ namespace vrui {
 
 		if (box_plane_indices.size())
 			palette_box_plane_renderer.render(ctx, 0, box_plane_indices.size());
+
+		for (int i = 0; i < (int)palette_object_positions.size(); ++i) {
+			if (!palette_object_visibility[i])
+				continue;
+			if (i >= (int)palette_object_use_button_image.size() || !palette_object_use_button_image[i])
+				continue;
+
+			const bool has_specific_file = i < (int)palette_object_button_image_files.size() && !palette_object_button_image_files[i].empty();
+			cgv::render::texture* tex_ptr = nullptr;
+
+			if (has_specific_file) {
+				auto& tex = palette_object_button_textures[i];
+				if ((int)palette_object_button_texture_needs_upload.size() <= i)
+					continue;
+				if (palette_object_button_texture_needs_upload[i] || !tex.is_created()) {
+					if (tex.is_created())
+						tex.destruct(ctx);
+					tex = cgv::render::texture("uint8[R,G,B,A]");
+					tex.set_min_filter(cgv::render::TF_LINEAR);
+					tex.set_mag_filter(cgv::render::TF_LINEAR);
+					if (!tex.create_from_image(ctx, palette_object_button_image_files[i])) {
+						std::cerr << "[palette] Failed to load button image: " << palette_object_button_image_files[i] << "\n";
+						if (tex.is_created())
+							tex.destruct(ctx);
+					}
+					palette_object_button_texture_needs_upload[i] = false;
+				}
+				if (tex.is_created())
+					tex_ptr = &tex;
+			}
+			else if (palette_button_texture.is_created()) {
+				tex_ptr = &palette_button_texture;
+			}
+
+			if (!tex_ptr)
+				continue;
+
+			vec3 icon_position = palette_object_positions[i] + icon_offset;
+			quat icon_rot = icon_rotation;
+			cgv::math::fvec<float, 2> icon_extent(0.030f, 0.030f);
+			cgv::math::fvec<float, 4> icon_texcoord(0.0f, 0.0f, 1.0f, 1.0f);
+
+			tex_ptr->enable(ctx, 0);
+			palette_icon_renderer.set_render_style(p_icon_style);
+			palette_icon_renderer.set_position_array(ctx, &icon_position, 1);
+			palette_icon_renderer.set_rotation_array(ctx, &icon_rot, 1);
+			palette_icon_renderer.set_extent_array(ctx, &icon_extent, 1);
+			palette_icon_renderer.set_texcoord_array(ctx, &icon_texcoord, 1);
+			palette_icon_renderer.render(ctx, 0, 1);
+			tex_ptr->disable(ctx);
+		}
 
 		// Render cone icons on the palette toolbar
 		if (cone_indices.size() > 0) {

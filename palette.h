@@ -6,10 +6,12 @@
 #include <cgv_gl/box_renderer.h>
 #include <cgv_gl/box_wire_renderer.h>
 #include <cgv_gl/cone_renderer.h>
+#include <cgv_gl/rectangle_renderer.h>
 #include <memory>
 #include "vr_labels.h"
 #include "label_shader_manager.h"
 #include <cgv/render/shader_program.h>
+#include <cgv/render/texture.h>
 #include <cgv_gl/point_renderer.h>
 #include <point_cloud.h>
 
@@ -64,6 +66,10 @@ namespace vrui {
 		std::vector<cgv::rgba> palette_object_colors;
 		std::vector<void*> palette_object_data;
 		std::vector<int> positions_in_group;
+		std::vector<bool> palette_object_use_button_image;
+		std::vector<std::string> palette_object_button_image_files;
+		std::vector<cgv::render::texture> palette_object_button_textures;
+		std::vector<bool> palette_object_button_texture_needs_upload;
 		std::vector<int> palette_text_label_ids; //map containing text label ids for text attached to palette objects, -1 means no label is assigned
 		vr_labels palette_text_labels;
 
@@ -81,6 +87,7 @@ namespace vrui {
 		cgv::render::box_renderer palette_plane_renderer;
 		cgv::render::box_wire_renderer palette_box_wire_renderer;
 		cgv::render::box_renderer palette_box_plane_renderer;  // render rounding corner box renderer for palette
+		cgv::render::rectangle_renderer palette_icon_renderer;
 		cgv::render::attribute_array_manager palette_spheres;
 		cgv::render::attribute_array_manager palette_boxes;
 		cgv::render::attribute_array_manager palette_planes;
@@ -90,6 +97,10 @@ namespace vrui {
 		cgv::render::sphere_render_style p_sphere_style;
 		cgv::render::box_render_style p_box_style, p_plane_style, p_box_plane_style; // p_box_plane_style: render rounding corner box renderer for palette
 		cgv::render::box_wire_render_style p_box_wire_style;
+		cgv::render::rectangle_render_style p_icon_style;
+		cgv::render::texture palette_button_texture;
+		std::string palette_button_image_file;
+		bool palette_button_texture_needs_upload = false;
 	protected:
 		cgv::render::point_render_style point_cloud_style;
 	private:
@@ -201,6 +212,13 @@ namespace vrui {
 		}
 		/// indicate that the palette was changed so class internal render code can react to it
 		void set_palette_changed();
+
+		/// set one common image file used for all buttons flagged with set_object_uses_button_image()
+		void set_buttons_image_file(const std::string& file_name);
+		/// enable/disable button-image rendering for a specific palette object id; safe to call with invalid ids
+		void set_object_uses_button_image(int id, bool use_image = true);
+		/// set an image file for one palette object; if empty, fallback image from set_buttons_image_file() is used
+		void set_object_button_image_file(int id, const std::string& file_name);
 
 		void init_text_labels(cgv::render::context& ctx, vr_view_interactor* vr_view_ptr);
 
