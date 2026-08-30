@@ -19,6 +19,7 @@
 #include <chrono>
 #include <numeric>
 #include <cstdio>
+#include <cmath>
 #include <queue>
 #include <concurrency.h>
 #include "util.h"
@@ -1839,12 +1840,15 @@ void pointcloud_labeling_tool::draw(cgv::render::context & ctx)
 	case InteractionMode::LABELING_3:
 	case InteractionMode::LABELING_2:
 	case InteractionMode::LABELING: {
-		if (palette_position == PalettePosition::HEADON)
-		{
-			palette.render_palette(ctx, hmd_trans_palette);
+		const bool palette_active = is_palette_activation_pose();
+		if (palette_active) {
+			if (palette_position == PalettePosition::HEADON)
+			{
+				palette.render_palette(ctx, hmd_trans_palette);
+			}
+			else if(palette_position == PalettePosition::LEFTHAND)
+				palette.render_palette(ctx, controller_poses[palette_hand]);
 		}
-		else if(palette_position == PalettePosition::LEFTHAND)
-			palette.render_palette(ctx, controller_poses[palette_hand]);
 
 		//set color
 		rgba color;
@@ -2642,6 +2646,34 @@ void pointcloud_labeling_tool::render_palette_cylinder_on_rhand(cgv::render::con
 	cr.render(ctx, 0, 2);
 	glDisable(GL_BLEND);
 }
+
+bool pointcloud_labeling_tool::is_palette_activation_pose() const
+{
+	if (!palette_pose_gate_enabled)
+		return true;
+	if (!vr_view_ptr || !vr_view_ptr->get_current_vr_state())
+		return false;
+	if (vr_view_ptr->get_current_vr_state()->controller[palette_hand].status != vr::VRS_TRACKED)
+		return false;
+
+	// Convert world axes into controller-local coordinates.
+	const quat q = cgv::math::pose_orientation(controller_poses[palette_hand]);
+	quat q_inv = q.conj();
+	vec3 local_up(0.0f, 0.0f, 1.0f);
+	q_inv.rotate(local_up);
+	vec3 local_forward(0.0f, 1.0f, 0.0f);
+	q_inv.rotate(local_forward);
+
+	// Signed Euler-like angles used for gating.
+	const float yaw_deg = (float)cgv::math::rad2deg(std::atan2((double)local_forward.x(), (double)-local_forward.z()));
+	const float pitch_deg = (float)cgv::math::rad2deg(std::atan2((double)local_up.z(), (double)local_up.y()));
+	const float roll_deg = (float)cgv::math::rad2deg(std::atan2((double)local_up.x(), (double)local_up.y()));
+
+	return
+		yaw_deg >= palette_yaw_lower_limit_deg && yaw_deg <= palette_yaw_upper_limit_deg &&
+		pitch_deg >= palette_pitch_lower_limit_deg && pitch_deg <= palette_pitch_upper_limit_deg &&
+		roll_deg >= palette_roll_lower_limit_deg && roll_deg <= palette_roll_upper_limit_deg;
+}
 ///
 bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 {
@@ -2785,11 +2817,17 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 			// pick a label 
 			if (is_labeling_mode(interaction_mode))
 			{
-				// handle/check palette object picking
+				const bool palette_active = is_palette_activation_pose();
 				vec3 picking_position_rhand = cgv::math::pose_position(controller_poses[point_selection_hand]) + curr_offset_rhand;
-				float dist;
-				// check for picked object, calls function given by palette.set_function(f) if something was picked
-				int nearest_palette_idx = palette.trigger_object(picking_position_rhand, controller_poses[palette_hand], dist);
+				if (palette_active) {
+					float dist;
+					// check for picked object, calls function given by palette.set_function(f) if something was picked
+					int nearest_palette_idx = palette.trigger_object(picking_position_rhand, controller_poses[palette_hand], dist);
+					(void)nearest_palette_idx;
+				}
+				else {
+					palette.reset_trigger_state();
+				}
 
 				// continue based labeling tool mode
 				if (point_editing_tool == pallete_tool::PT_SELECTION) {

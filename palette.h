@@ -159,6 +159,8 @@ namespace vrui {
 		virtual void set_function(object_funct& func);
 		// call the function set by set_function() with parameters generated from the given id
 		void trigger_function(int id);
+		/// reset one-shot trigger state; useful when palette interaction is temporarily disabled
+		void reset_trigger_state() { last_triggered_object = -1; }
 		// return a vector containing all object ids used in the left toolbar 
 		const std::vector<int>& left_toolbar();
 

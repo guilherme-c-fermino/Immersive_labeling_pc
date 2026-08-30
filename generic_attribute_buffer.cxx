@@ -12,12 +12,14 @@ generic_point_attribute::generic_point_attribute(generic_point_attribute&& other
 {
 	size_p = other.size_p;
 	size_in_bytes = other.size_in_bytes;
+	gpu_size_in_bytes = other.gpu_size_in_bytes;
 	element_size = other.element_size;
 	binding_point = other.binding_point;
 	buffer = other.buffer;
 	data_p = other.data_p;
 	other.data_p = nullptr;
 	other.buffer = 0;
+	other.gpu_size_in_bytes = 0;
 	raw_data = std::move(other.raw_data);
 }
 
@@ -36,6 +38,8 @@ void generic_point_attribute::init()
 void generic_point_attribute::clear()
 {
 	glDeleteBuffers(1, &buffer);
+	buffer = 0;
+	gpu_size_in_bytes = 0;
 }
 
 void generic_point_attribute::bind()
@@ -54,7 +58,13 @@ void generic_point_attribute::download()
 void generic_point_attribute::upload()
 {
 	assert(buffer != 0 && data());
-	glNamedBufferData(buffer, size_in_bytes, data_p, GL_STATIC_READ);
+	if (gpu_size_in_bytes != size_in_bytes) {
+		glNamedBufferData(buffer, size_in_bytes, data_p, GL_DYNAMIC_DRAW);
+		gpu_size_in_bytes = size_in_bytes;
+	}
+	else {
+		glNamedBufferSubData(buffer, 0, size_in_bytes, data_p);
+	}
 }
 
 void generic_point_attribute::load(void* data, size_t size)

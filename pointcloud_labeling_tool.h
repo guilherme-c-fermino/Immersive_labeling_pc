@@ -338,6 +338,8 @@ protected:
 
 	/// update palette color map to reflect changes in PALETTE_COLOR_MAPPING
 	void update_palette();
+	/// returns true when the controller orientation is in the allowed range to show/use palette
+	bool is_palette_activation_pose() const;
 	
 	vec3 shape_offset(float radius) const;
 
@@ -688,6 +690,13 @@ private:
 	
 	std::vector<rgba> PALETTE_COLOR_MAPPING; //palette element colors, includes label colors beginning at offset 1 
 	vrui::label_palette palette;
+	bool palette_pose_gate_enabled = true;
+	float palette_yaw_lower_limit_deg = -90.0f;
+	float palette_yaw_upper_limit_deg = 45.0f;
+	float palette_pitch_lower_limit_deg = -30.0f;
+	float palette_pitch_upper_limit_deg = 60.0f;
+	float palette_roll_lower_limit_deg = -90.0f;
+	float palette_roll_upper_limit_deg = 45.0f;
 	vrui::point_cloud_palette rgbd_input_palette;
 	/// handle for sphere element used to toggle rgbd_input_palette_delete_mode in the point cloud palette
 	int rgbd_input_palette_delete_id;

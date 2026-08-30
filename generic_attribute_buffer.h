@@ -14,6 +14,7 @@ class generic_point_attribute {
 	void* data_p;
 	std::vector<uint8_t> raw_data;
 	size_t size_in_bytes;
+	size_t gpu_size_in_bytes = 0;
 
 public:
 
