@@ -62,6 +62,9 @@ public:
 	//copy data from main memory to buffer
 	void upload();
 
+	/// copy only the element range [first_element, first_element+num_elements) from main memory to the buffer
+	void upload_range(size_t first_element, size_t num_elements);
+
 	/// copies data into the object, @param size is the number of elements
 	void load(void* data, size_t size);
 

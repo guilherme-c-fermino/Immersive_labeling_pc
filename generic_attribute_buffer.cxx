@@ -67,6 +67,22 @@ void generic_point_attribute::upload()
 	}
 }
 
+void generic_point_attribute::upload_range(size_t first_element, size_t num_elements)
+{
+	assert(buffer != 0 && data());
+	if (buffer == 0 || data_p == nullptr || num_elements == 0 || first_element >= size_p)
+		return;
+	// a resized buffer has to be reallocated on the gpu, a partial update is not possible then
+	if (gpu_size_in_bytes != size_in_bytes) {
+		upload();
+		return;
+	}
+	if (num_elements > size_p - first_element)
+		num_elements = size_p - first_element;
+	glNamedBufferSubData(buffer, first_element * element_size, num_elements * element_size,
+		(const char*)data_p + first_element * element_size);
+}
+
 void generic_point_attribute::load(void* data, size_t size)
 {
 	size_in_bytes = size * element_size;

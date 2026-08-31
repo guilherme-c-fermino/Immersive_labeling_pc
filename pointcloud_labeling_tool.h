@@ -755,6 +755,41 @@ private:
 	// live preview
 	std::vector<GLint> cp_preview_labels;         ///< Dijkstra result preview (per-point, -1 = no label)
 	void cp_update_preview();                     ///< recompute preview after CP add/delete
+	/// request a preview recomputation; the actual (potentially expensive) work is done
+	/// throttled on the render thread in init_frame()
+	void cp_request_preview_update();
+	/// re-tag every control point of the running session with the currently picked label and
+	/// request a preview refresh. Must be called whenever picked_label changes (semantic or
+	/// instance) so a commit never writes the label that was selected when the session started.
+	void cp_sync_session_label();
+	/// run the multi source dijkstra propagation over the precomputed knn graph.
+	/// results are written to cp_label_result, the visited point ids are collected in cp_touched.
+	/// @return number of points that received a label
+	size_t cp_propagate_labels();
+	/// restore the labels recorded in \p undo_entries (bounds checked) and upload the changed range
+	void cp_restore_labels(std::vector<std::pair<uint32_t, GLint>>& undo_entries);
+	/// serialize access to cp_ann_tree - the underlying ANN library uses global state and is not thread safe
+	std::mutex cp_ann_mutex;
+	/// precomputed knn graph, CP_K neighbor ids per point, -1 marks an unused slot.
+	/// built once in the background so the propagation does not have to query the kd-tree per node.
+	std::vector<int32_t> cp_knn_idx;
+	size_t cp_knn_graph_points = 0;               ///< number of points covered by cp_knn_idx
+	/// memory budget for the precomputed knn graph; larger clouds fall back to on demand kd-tree queries
+	size_t cp_knn_graph_budget_bytes = 768ull * 1024ull * 1024ull;
+	// scratch buffers reused between propagation runs to avoid per-call allocation of N-sized vectors
+	std::vector<float> cp_dist;
+	std::vector<GLint> cp_label_result;
+	std::vector<uint32_t> cp_visit_stamp;         ///< generation counter per point, avoids clearing cp_dist every run
+	/// generation counter marking points that were already expanded (settled). Dijkstra only ever
+	/// has to expand a node once; without this a degenerate edge weight can make the queue cycle.
+	std::vector<uint32_t> cp_settled_stamp;
+	uint32_t cp_current_stamp = 0;
+	std::vector<uint32_t> cp_touched;             ///< point ids reached by the last propagation
+	/// hard cap on the number of expanded nodes; protects against unbounded memory use for large Omega
+	size_t cp_max_visited_points = 4000000;
+	bool cp_preview_dirty = false;                ///< set by interaction code, serviced in init_frame()
+	std::chrono::steady_clock::time_point cp_last_preview_time{};
+	double cp_preview_min_interval = 0.1;         ///< minimum seconds between two preview recomputations
 	// undo support
 	std::vector<std::pair<uint32_t, GLint>> cp_undo_buffer; ///< (index, old_label) pairs for the active/preview session
 

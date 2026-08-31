@@ -1115,6 +1115,16 @@ void pointcloud_labeling_tool::init_frame(cgv::render::context& ctx)
 			text_labels.hide_label(teleport_sp_label_id);
 	}
 
+	// Recompute a pending CP propagation preview here instead of directly in the event
+	// handler: the propagation is expensive and holding down the parameter stick would
+	// otherwise trigger one full run per input event and stall the vr render loop.
+	if (cp_preview_dirty && (InteractionMode)interaction_mode == InteractionMode::LABELING_3) {
+		const double elapsed = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - cp_last_preview_time).count();
+		if (elapsed >= cp_preview_min_interval)
+			cp_update_preview();
+	}
+
 	// update visibility of visibility changing labels
 	
 	if (vr_view_ptr && vr_view_ptr->get_current_vr_state()) {
@@ -2175,27 +2185,23 @@ void pointcloud_labeling_tool::build_palette()
 				picked_label = make_label(0, point_label_group::DELETED);
 				picked_label_operation = point_label_operation::REPLACE;
 				point_selection_color = PALETTE_COLOR_MAPPING[0];
+				cp_sync_session_label();
 				break;
 			case 1: //default label (clear / unannotated)
 				picked_semantic_id = 0;
 				picked_label = make_label(0, point_label_group::VISIBLE);
 				picked_label_operation = point_label_operation::REPLACE;
 				point_selection_color = default_point_selection_color;
+				cp_sync_session_label();
 				break;
 			default:
 			{
 				picked_semantic_id = ix - 1;
 				picked_label_operation = point_label_operation::REPLACE;
 				point_selection_color = ix < PALETTE_COLOR_MAPPING.size() ? PALETTE_COLOR_MAPPING[ix] : default_point_selection_color;
-				// Compute label with instance encoding
+				// Compute label with instance encoding; this also re-tags an active CP session
+				// with the new label and schedules a preview refresh.
 				recompute_instance_label();
-				// LABELING_3: if a CP session is active, update all placed CPs to the new label
-				// and re-run the preview so the propagation always reflects the current selection.
-				if ((InteractionMode)interaction_mode == InteractionMode::LABELING_3 && cp_session_active && !cp_control_points.empty()) {
-					for (auto& cp : cp_control_points)
-						cp.label = picked_label;
-					cp_update_preview();
-				}
 			}
 			}
 			break;
@@ -2353,7 +2359,7 @@ void pointcloud_labeling_tool::build_palette()
 					case 3: cp_alpha_c += 0.1f; break;
 					}
 					update_cp_params_label();
-					if (cp_session_active && !cp_control_points.empty()) cp_update_preview();
+					if (cp_session_active && !cp_control_points.empty()) cp_request_preview_update();
 				} else if (pos == 1) {
 					// -VALUE: decrease selected CP parameter
 					switch (cp_selected_param) {
@@ -2363,7 +2369,7 @@ void pointcloud_labeling_tool::build_palette()
 					case 3: cp_alpha_c = std::max(0.f, cp_alpha_c - 0.1f); break;
 					}
 					update_cp_params_label();
-					if (cp_session_active && !cp_control_points.empty()) cp_update_preview();
+					if (cp_session_active && !cp_control_points.empty()) cp_request_preview_update();
 				} else if (pos == 12) {
 					// PARAM TOGGLE: cycle to next CP parameter
 					cp_selected_param = (cp_selected_param + 1) % 4;
@@ -2387,6 +2393,9 @@ void pointcloud_labeling_tool::build_palette()
 				} else if (pos == 10) {
 					// COMMIT: confirm CP session (mirrors right stick click in LABELING_3)
 					if (!cp_control_points.empty()) {
+						// flush a throttled preview update so the committed labels are up to date
+						if (cp_preview_dirty)
+							cp_update_preview();
 						if (!check_instance_constraint()) {
 							if (instance_warning_label_id != (uint32_t)-1) {
 								text_labels.show_label(instance_warning_label_id);
@@ -2406,6 +2415,7 @@ void pointcloud_labeling_tool::build_palette()
 							}
 							cp_ray_active = false;
 							cp_hit_valid = false;
+							cp_preview_dirty = false;
 							instance_counter++;
 							recompute_instance_label();
 							std::cout << "[CP] Palette COMMIT. Instance counter -> " << instance_counter << "\n";
@@ -2415,18 +2425,12 @@ void pointcloud_labeling_tool::build_palette()
 					}
 				} else if (pos == 11) {
 					// CANCEL: discard CP session (mirrors left stick click in LABELING_3)
-					if (!cp_undo_buffer.empty()) {
-						auto& chunked_points_cp = point_server_ptr->ref_chunks();
-						auto& point_labels_cp = chunked_points_cp.get_attribute(label_attribute_id);
-						GLint* labels_cp = point_labels_cp.data<GLint>();
-						for (auto& p : cp_undo_buffer) labels_cp[p.first] = p.second;
-						point_labels_cp.upload();
-						cp_undo_buffer.clear();
-					}
+					cp_restore_labels(cp_undo_buffer);
 					cp_control_points.clear();
 					cp_session_active = false;
 					cp_ray_active = false;
 					cp_hit_valid = false;
+					cp_preview_dirty = false;
 					std::cout << "[CP] Palette CANCEL: all control points discarded.\n";
 				}
 			}
@@ -3430,20 +3434,12 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				// Left stick click: cancel CP session in LABELING_3
 				if (vrke.get_controller_index() == 0 && (InteractionMode)interaction_mode == InteractionMode::LABELING_3) {
 					// Restore preview labels to original values
-					if (!cp_undo_buffer.empty()) {
-						auto& chunked_points = point_server_ptr->ref_chunks();
-						auto& point_labels = chunked_points.get_attribute(label_attribute_id);
-						GLint* labels = point_labels.data<GLint>();
-						for (auto& p : cp_undo_buffer) {
-							labels[p.first] = p.second;
-						}
-						point_labels.upload();
-						cp_undo_buffer.clear();
-					}
+					cp_restore_labels(cp_undo_buffer);
 					cp_control_points.clear();
 					cp_session_active = false;
 					cp_ray_active = false;
 					cp_hit_valid = false;
+					cp_preview_dirty = false;
 					std::cout << "[CP] Session cancelled: all control points discarded.\n";
 				}
 				// Right stick click: confirm sculpt label in LABELING_2
@@ -3500,6 +3496,10 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 				// Right stick click: confirm CP session in LABELING_3 — keep preview labels
 				if (vrke.get_controller_index() == 1 && (InteractionMode)interaction_mode == InteractionMode::LABELING_3) {
 					if (!cp_control_points.empty()) {
+						// a preview update may still be pending (throttled in init_frame); flush it
+						// so the confirmed labels always match the latest control point set
+						if (cp_preview_dirty)
+							cp_update_preview();
 						// Enforce instance-to-semantic constraint (same lock as LABELING / LABELING_2)
 						if (!check_instance_constraint()) {
 							std::cout << "[CP] Confirm blocked: instance " << instance_counter
@@ -3529,6 +3529,7 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 						}
 						cp_ray_active = false;
 						cp_hit_valid = false;
+						cp_preview_dirty = false;
 
 						// Auto-increment instance counter for next session
 						instance_counter++;
@@ -3821,7 +3822,7 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 							}
 							update_cp_params_label();
 							if (cp_session_active && !cp_control_points.empty())
-								cp_update_preview();
+								cp_request_preview_update();
 							last_stick_x_direction_r = x_dir;
 							last_param_time = now;
 						}
@@ -4098,7 +4099,11 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 
 				if (!cp_subtractive_mode) {
 					// ADD: find closest point to hit location via ANN tree
-					point_cloud_types::Idx closest_idx = cp_ann_tree.find_closest(hit_model);
+					point_cloud_types::Idx closest_idx = -1;
+					if (cp_knn_ready.load()) {
+						std::lock_guard<std::mutex> ann_lock(cp_ann_mutex);
+						closest_idx = cp_ann_tree.find_closest(hit_model);
+					}
 					if (closest_idx >= 0 && (size_t)closest_idx < source_point_cloud.get_nr_points()) {
 						ControlPoint cp;
 						cp.point_index = (uint32_t)closest_idx;
@@ -4107,7 +4112,7 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 						cp_session_active = true;
 						std::cout << "[CP] Added CP " << cp_control_points.size()
 							<< " at point " << closest_idx << " label " << picked_label << "\n";
-						cp_update_preview();
+						cp_request_preview_update();
 					}
 				}
 				else {
@@ -4129,7 +4134,7 @@ void pointcloud_labeling_tool::on_throttle_threshold(const int ci, const bool lo
 							std::cout << "[CP] Deleted CP " << best_idx << "\n";
 							cp_control_points.erase(cp_control_points.begin() + best_idx);
 							if (cp_control_points.empty()) cp_session_active = false;
-							cp_update_preview();
+							cp_request_preview_update();
 						}
 					}
 				}
@@ -4568,6 +4573,7 @@ void pointcloud_labeling_tool::recompute_instance_label() {
 			if (palette.object_id_is_valid(disp_id))
 				palette.set_label_text(disp_id, std::to_string(instance_counter));
 		}
+		cp_sync_session_label();
 		return;
 	}
 	// Combine instance and semantic into the label value
@@ -4587,6 +4593,8 @@ void pointcloud_labeling_tool::recompute_instance_label() {
 		if (palette.object_id_is_valid(disp_id))
 			palette.set_label_text(disp_id, std::to_string(instance_counter));
 	}
+	// keep a running control point session on the freshly computed label
+	cp_sync_session_label();
 }
 
 bool pointcloud_labeling_tool::check_instance_constraint() const {
@@ -4823,6 +4831,18 @@ void pointcloud_labeling_tool::build_knn_graph_async() {
 	cp_session_active = false;
 	cp_ray_active = false;
 	cp_hit_valid = false;
+	cp_preview_dirty = false;
+	cp_undo_buffer.clear();
+	// invalidate everything derived from the previous point cloud
+	cp_knn_idx.clear();
+	cp_knn_idx.shrink_to_fit();
+	cp_knn_graph_points = 0;
+	cp_dist.clear();
+	cp_label_result.clear();
+	cp_visit_stamp.clear();
+	cp_settled_stamp.clear();
+	cp_touched.clear();
+	cp_current_stamp = 0;
 
 	if (source_point_cloud.get_nr_points() == 0)
 		return;
@@ -4832,6 +4852,7 @@ void pointcloud_labeling_tool::build_knn_graph_async() {
 		size_t N = source_point_cloud.get_nr_points();
 		if (N == 0) return;
 		try {
+			std::lock_guard<std::mutex> ann_lock(cp_ann_mutex);
 			cp_ann_tree.build(source_point_cloud);
 
 			// Compute average nearest-neighbor distance for cost normalization
@@ -4849,6 +4870,34 @@ void pointcloud_labeling_tool::build_knn_graph_async() {
 				}
 			}
 			cp_avg_spacing = (sample_count > 0) ? (float)(sum_dist / sample_count) : 1.0f;
+			if (!(cp_avg_spacing > 0.f) || !std::isfinite(cp_avg_spacing))
+				cp_avg_spacing = 1.0f;
+
+			// Precompute the KNN graph once. Querying the kd-tree inside the Dijkstra inner loop
+			// was by far the dominant cost of every preview update and made ANN (which keeps
+			// global state) reachable from several threads.
+			const size_t graph_bytes = N * (size_t)CP_K * sizeof(int32_t);
+			if (graph_bytes <= cp_knn_graph_budget_bytes) {
+				std::vector<int32_t> graph;
+				graph.assign(N * (size_t)CP_K, -1);
+				std::vector<point_cloud_types::Idx> neighbors;
+				for (size_t i = 0; i < N; ++i) {
+					neighbors.clear();
+					cp_ann_tree.extract_neighbors((point_cloud_types::Idx)i, CP_K, neighbors);
+					const size_t n = std::min((size_t)CP_K, neighbors.size());
+					for (size_t j = 0; j < n; ++j) {
+						point_cloud_types::Idx v = neighbors[j];
+						graph[i * (size_t)CP_K + j] = (v >= 0 && (size_t)v < N) ? (int32_t)v : -1;
+					}
+				}
+				cp_knn_idx = std::move(graph);
+				cp_knn_graph_points = N;
+				std::cout << "[CP] KNN graph precomputed (" << (graph_bytes >> 20) << " MiB).\n";
+			}
+			else {
+				std::cout << "[CP] KNN graph too large (" << (graph_bytes >> 20)
+					<< " MiB), falling back to on demand kd-tree queries.\n";
+			}
 
 			cp_knn_ready.store(true);
 			std::cout << "[CP] KNN tree built for " << N << " points (avg spacing=" << cp_avg_spacing << ").\n";
@@ -4859,111 +4908,213 @@ void pointcloud_labeling_tool::build_knn_graph_async() {
 	});
 }
 
-void pointcloud_labeling_tool::cp_apply_labels() {
-	if (!cp_knn_ready.load() || cp_control_points.empty()) {
-		std::cout << "[CP] Nothing to apply (no CPs or KNN not ready).\n";
+void pointcloud_labeling_tool::cp_request_preview_update() {
+	cp_preview_dirty = true;
+}
+
+void pointcloud_labeling_tool::cp_sync_session_label() {
+	if ((InteractionMode)interaction_mode != InteractionMode::LABELING_3)
+		return;
+	if (!cp_session_active || cp_control_points.empty())
+		return;
+	bool changed = false;
+	for (auto& cp : cp_control_points) {
+		if (cp.label != picked_label) {
+			cp.label = picked_label;
+			changed = true;
+		}
+	}
+	if (changed)
+		cp_request_preview_update();
+}
+
+void pointcloud_labeling_tool::cp_restore_labels(std::vector<std::pair<uint32_t, GLint>>& undo_entries) {
+	if (undo_entries.empty())
+		return;
+	if (!point_server_ptr || label_attribute_id < 0) {
+		undo_entries.clear();
 		return;
 	}
-
-	auto& chunked_points = point_server_ptr->ref_chunks();
-	auto& point_labels = chunked_points.get_attribute(label_attribute_id);
+	auto& point_labels = point_server_ptr->ref_chunks().get_attribute(label_attribute_id);
 	GLint* labels = point_labels.data<GLint>();
-	size_t N = source_point_cloud.get_nr_points();
+	const size_t label_count = point_labels.size();
+	if (!labels || label_count == 0) {
+		undo_entries.clear();
+		return;
+	}
+	size_t dirty_lo = label_count;
+	size_t dirty_hi = 0;
+	for (const auto& p : undo_entries) {
+		if (p.first >= label_count)
+			continue;
+		labels[p.first] = p.second;
+		if (p.first < dirty_lo) dirty_lo = p.first;
+		if (p.first > dirty_hi) dirty_hi = p.first;
+	}
+	if (dirty_lo <= dirty_hi)
+		point_labels.upload_range(dirty_lo, dirty_hi - dirty_lo + 1);
+	undo_entries.clear();
+}
 
-	// Pre-fetch normals if available (indexed by global point ID)
-	bool has_normals = (normal_attribute_id >= 0);
-	const vec3* normals = has_normals ? chunked_points.get_attribute(normal_attribute_id).data<vec3>() : nullptr;
+/// Multi source Dijkstra over the KNN graph starting from every control point.
+/// Writes labels into cp_label_result and collects reached point ids in cp_touched.
+size_t pointcloud_labeling_tool::cp_propagate_labels() {
+	cp_touched.clear();
 
-	bool has_colors = source_point_cloud.has_colors();
-	size_t n_pc = source_point_cloud.get_nr_points();
+	const size_t N = source_point_cloud.get_nr_points();
+	if (N == 0 || cp_control_points.empty() || !cp_knn_ready.load())
+		return 0;
 
-	// Multi-source Dijkstra from all confirmed control points
-	std::vector<float> dist(N, std::numeric_limits<float>::infinity());
-	std::vector<GLint> label_result(N, -1);
+	// (re)allocate scratch buffers only when the cloud size changed
+	if (cp_dist.size() != N) {
+		cp_dist.assign(N, std::numeric_limits<float>::infinity());
+		cp_label_result.assign(N, -1);
+		cp_visit_stamp.assign(N, 0);
+		cp_settled_stamp.assign(N, 0);
+		cp_current_stamp = 0;
+	}
+	// a new generation invalidates all entries of cp_dist/cp_label_result without touching them
+	if (++cp_current_stamp == 0) {
+		std::fill(cp_visit_stamp.begin(), cp_visit_stamp.end(), 0);
+		std::fill(cp_settled_stamp.begin(), cp_settled_stamp.end(), 0);
+		cp_current_stamp = 1;
+	}
+	const uint32_t stamp = cp_current_stamp;
 
-	// Priority queue: (cost, point_id, label)
+	auto dist_of = [&](size_t i) -> float {
+		return cp_visit_stamp[i] == stamp ? cp_dist[i] : std::numeric_limits<float>::infinity();
+	};
+
+	const bool has_graph = (cp_knn_graph_points == N) && (cp_knn_idx.size() == N * (size_t)CP_K);
+	const bool has_normals = (normal_attribute_id >= 0);
+	const vec3* normals = nullptr;
+	size_t normals_count = 0;
+	if (has_normals) {
+		auto& normal_attribute = point_server_ptr->ref_chunks().get_attribute(normal_attribute_id);
+		normals = normal_attribute.data<vec3>();
+		normals_count = normal_attribute.size();
+	}
+	const bool has_colors = source_point_cloud.has_colors();
+	// scale the geometric term by the average point spacing so Omega is resolution independent
+	const float inv_spacing = (std::isfinite(cp_avg_spacing) && cp_avg_spacing > 0.f) ? (1.f / cp_avg_spacing) : 1.f;
+
 	using Entry = std::tuple<float, uint32_t, GLint>;
 	std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> pq;
 
-	const int cp_k_neighbors = CP_K;
-	for (size_t ci2 = 0; ci2 < cp_control_points.size(); ++ci2) {
-		uint32_t cp_idx = cp_control_points[ci2].point_index;
-		GLint cp_lbl = cp_control_points[ci2].label;
-		if (cp_idx < N && dist[cp_idx] > 0.f) {
-			dist[cp_idx] = 0.f;
-			label_result[cp_idx] = cp_lbl;
-			pq.push(Entry(0.f, cp_idx, cp_lbl));
+	for (const auto& cp : cp_control_points) {
+		const uint32_t cp_idx = cp.point_index;
+		if (cp_idx >= N)
+			continue;
+		if (cp_visit_stamp[cp_idx] != stamp || cp_dist[cp_idx] > 0.f) {
+			cp_visit_stamp[cp_idx] = stamp;
+			cp_dist[cp_idx] = 0.f;
+			cp_label_result[cp_idx] = cp.label;
+			cp_touched.push_back(cp_idx);
+			pq.push(Entry(0.f, cp_idx, cp.label));
 		}
 	}
 
 	std::vector<point_cloud_types::Idx> neighbors;
+	size_t expanded = 0;
+	size_t skipped_invalid = 0;
 	while (!pq.empty()) {
-		Entry top = pq.top(); pq.pop();
-		float cost = std::get<0>(top);
-		uint32_t u  = std::get<1>(top);
-		GLint lbl   = std::get<2>(top);
-		if (cost > dist[u]) continue; // stale entry
-		if (cost > cp_Omega_max) break; // exceeded max propagation cost
+		const Entry top = pq.top(); pq.pop();
+		const float cost = std::get<0>(top);
+		const uint32_t u = std::get<1>(top);
+		const GLint lbl = std::get<2>(top);
+		if (u >= N || cost > dist_of(u)) continue; // stale entry
+		// Dijkstra never has to expand a node twice. Enforcing that explicitly bounds the loop
+		// by the number of points even if some edge weight is degenerate (a single NaN weight
+		// makes every ordering comparison false and would otherwise cycle the queue forever).
+		if (cp_settled_stamp[u] == stamp) continue;
+		cp_settled_stamp[u] = stamp;
+		if (cost > cp_Omega_max) break;            // exceeded max propagation cost
+		if (++expanded > cp_max_visited_points) {
+			std::cerr << "[CP] propagation stopped at " << cp_max_visited_points
+				<< " points, lower Omega to cover a larger area.\n";
+			break;
+		}
 
-		neighbors.clear();
-		cp_ann_tree.extract_neighbors((point_cloud_types::Idx)u, cp_k_neighbors, neighbors);
+		const int32_t* nb_begin = nullptr;
+		size_t nb_count = 0;
+		if (has_graph) {
+			nb_begin = cp_knn_idx.data() + (size_t)u * (size_t)CP_K;
+			nb_count = CP_K;
+		}
+		else {
+			neighbors.clear();
+			{
+				std::lock_guard<std::mutex> ann_lock(cp_ann_mutex);
+				cp_ann_tree.extract_neighbors((point_cloud_types::Idx)u, CP_K, neighbors);
+			}
+			nb_count = neighbors.size();
+		}
 
-		for (point_cloud_types::Idx v : neighbors) {
+		const vec3& pu = source_point_cloud.pnt(u);
+		for (size_t j = 0; j < nb_count; ++j) {
+			const int32_t v = has_graph ? nb_begin[j] : (int32_t)neighbors[j];
 			if (v < 0 || (size_t)v >= N) continue;
+			if (cp_settled_stamp[v] == stamp) continue;
 
 			// Position-based edge cost (normalized by average spacing)
-			const vec3& pu = source_point_cloud.pnt(u);
 			const vec3& pv = source_point_cloud.pnt(v);
-			float w = cp_alpha_p * (length(pv - pu) / cp_avg_spacing);
+			float w = cp_alpha_p * (length(pv - pu) * inv_spacing);
 
 			// Normal similarity cost (1 - |cos(angle)|)
-			if (has_normals && normals && (size_t)u < N && (size_t)v < N) {
-				vec3 nu = normals[u];
-				vec3 nv = normals[v];
-				float len_u = length(nu), len_v = length(nv);
+			if (normals && (size_t)u < normals_count && (size_t)v < normals_count) {
+				const vec3& nu = normals[u];
+				const vec3& nv = normals[v];
+				const float len_u = length(nu), len_v = length(nv);
 				if (len_u > 1e-6f && len_v > 1e-6f) {
-					float cos_a = std::abs(dot(nu / len_u, nv / len_v));
+					const float cos_a = std::abs(dot(nu / len_u, nv / len_v));
 					w += cp_alpha_n * (1.f - cos_a);
 				}
 			}
 
 			// Color similarity cost
-			if (has_colors && (size_t)u < n_pc && (size_t)v < n_pc) {
-				auto cu = source_point_cloud.clr(u);
-				auto cv = source_point_cloud.clr(v);
-				float dr = cu.R() - cv.R();
-				float dg = cu.G() - cv.G();
-				float db = cu.B() - cv.B();
-				w += cp_alpha_c * std::sqrt(dr*dr + dg*dg + db*db);
+			if (has_colors) {
+				const auto cu = source_point_cloud.clr(u);
+				const auto cv = source_point_cloud.clr(v);
+				const float dr = cu.R() - cv.R();
+				const float dg = cu.G() - cv.G();
+				const float db = cu.B() - cv.B();
+				w += cp_alpha_c * std::sqrt(dr * dr + dg * dg + db * db);
 			}
 
-			float new_dist = cost + w;
-			if (new_dist < dist[(size_t)v] && new_dist <= cp_Omega_max) {
-				dist[(size_t)v] = new_dist;
-				label_result[(size_t)v] = lbl;
-				pq.push(Entry(new_dist, (uint32_t)v, lbl));
+			const float new_dist = cost + w;
+			// Points with invalid coordinates/colors (NaN is common in raw scans) would produce a
+			// NaN weight. Every comparison against NaN is false, so such an edge would bypass both
+			// the Omega cutoff and the relaxation test and keep re-entering the queue.
+			if (!std::isfinite(new_dist) || new_dist < 0.f) {
+				++skipped_invalid;
+				continue;
 			}
+			if (new_dist > cp_Omega_max || new_dist >= dist_of(v))
+				continue;
+			if (cp_visit_stamp[v] != stamp) {
+				cp_visit_stamp[v] = stamp;
+				cp_touched.push_back((uint32_t)v);
+			}
+			cp_dist[v] = new_dist;
+			cp_label_result[v] = lbl;
+			pq.push(Entry(new_dist, (uint32_t)v, lbl));
 		}
 	}
+	if (skipped_invalid > 0)
+		std::cout << "[CP] skipped " << skipped_invalid
+			<< " edges with a non finite cost (invalid point coordinates or colors).\n";
+	return cp_touched.size();
+}
 
-	// Apply propagated labels — save old values for undo
-	cp_undo_buffer.clear();
-	int applied = 0;
-	float max_cost_reached = 0.f;
-	for (size_t i = 0; i < N; ++i) {
-		if (label_result[i] >= 0) {
-			cp_undo_buffer.push_back(std::make_pair((uint32_t)i, labels[i]));
-			labels[i] = label_result[i];
-			++applied;
-			if (dist[i] > max_cost_reached) max_cost_reached = dist[i];
-		}
+void pointcloud_labeling_tool::cp_apply_labels() {
+	if (!cp_knn_ready.load() || cp_control_points.empty()) {
+		std::cout << "[CP] Nothing to apply (no CPs or KNN not ready).\n";
+		return;
 	}
-	// Upload CPU-side labels to GPU
-	point_labels.upload();
-
-	std::cout << "[CP] Labels applied to " << applied << " / " << N << " points from "
-		<< cp_control_points.size() << " control points (max cost=" << max_cost_reached
-		<< ", limit=" << cp_Omega_max << ", avg_spacing=" << cp_avg_spacing << ").\n";
+	cp_update_preview();
+	std::cout << "[CP] Labels applied to " << cp_undo_buffer.size() << " points from "
+		<< cp_control_points.size() << " control points (limit=" << cp_Omega_max
+		<< ", avg_spacing=" << cp_avg_spacing << ").\n";
 }
 
 /// Rebuilds the cp_omega_label text showing all 4 CP parameters.
@@ -5007,108 +5158,66 @@ void pointcloud_labeling_tool::update_cp_params_label() {
 }
 
 void pointcloud_labeling_tool::cp_update_preview() {
-	if (!cp_knn_ready.load()) return;
+	cp_preview_dirty = false;
+	cp_last_preview_time = std::chrono::steady_clock::now();
+
+	if (!cp_knn_ready.load() || !point_server_ptr)
+		return;
 
 	auto& chunked_points = point_server_ptr->ref_chunks();
+	if (label_attribute_id < 0)
+		return;
 	auto& point_labels = chunked_points.get_attribute(label_attribute_id);
-	size_t N = source_point_cloud.get_nr_points();
-	if (N == 0) return;
+	GLint* labels = point_labels.data<GLint>();
+	// Never index beyond the allocated label buffer: the point cloud and the chunked
+	// attribute can get out of sync (paste/fuse/rechunk) and an overflow here silently
+	// corrupts the heap and crashes later.
+	const size_t label_count = point_labels.size();
+	if (!labels || label_count == 0)
+		return;
 
 	// If this is the very first CP of a fresh session (undo buffer empty), sync GPU->CPU
 	// so that labels applied by painter/sculpt are not lost when we read the CPU buffer.
 	if (cp_undo_buffer.empty())
 		point_labels.download();
 
-	GLint* labels = point_labels.data<GLint>();
+	// track the range of modified elements so only that part has to be sent to the gpu again
+	size_t dirty_lo = label_count;
+	size_t dirty_hi = 0;
+	auto mark_dirty = [&](size_t i) {
+		if (i < dirty_lo) dirty_lo = i;
+		if (i > dirty_hi) dirty_hi = i;
+	};
 
 	// Restore any previously previewed points to their original labels before re-running
-	for (auto& p : cp_undo_buffer) {
-		labels[p.first] = p.second;
+	for (const auto& p : cp_undo_buffer) {
+		if (p.first < label_count) {
+			labels[p.first] = p.second;
+			mark_dirty(p.first);
+		}
 	}
 	cp_undo_buffer.clear();
 
 	if (cp_control_points.empty()) {
-		point_labels.upload();
+		if (dirty_lo <= dirty_hi)
+			point_labels.upload_range(dirty_lo, dirty_hi - dirty_lo + 1);
 		return;
 	}
 
-	// Run Dijkstra from all CPs
-	std::vector<float> dist(N, std::numeric_limits<float>::infinity());
-	std::vector<GLint> label_result(N, -1);
-
-	using Entry = std::tuple<float, uint32_t, GLint>;
-	std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> pq;
-
-	for (size_t ci2 = 0; ci2 < cp_control_points.size(); ++ci2) {
-		uint32_t cp_idx = cp_control_points[ci2].point_index;
-		GLint cp_lbl = cp_control_points[ci2].label;
-		if (cp_idx < N && dist[cp_idx] > 0.f) {
-			dist[cp_idx] = 0.f;
-			label_result[cp_idx] = cp_lbl;
-			pq.push(Entry(0.f, cp_idx, cp_lbl));
-		}
-	}
-
-	bool has_normals = (normal_attribute_id >= 0);
-	const vec3* normals = has_normals ? chunked_points.get_attribute(normal_attribute_id).data<vec3>() : nullptr;
-	bool has_colors = source_point_cloud.has_colors();
-	size_t n_pc = source_point_cloud.get_nr_points();
-
-	std::vector<point_cloud_types::Idx> neighbors;
-	while (!pq.empty()) {
-		Entry top = pq.top(); pq.pop();
-		float cost = std::get<0>(top);
-		uint32_t u  = std::get<1>(top);
-		GLint lbl   = std::get<2>(top);
-		if (cost > dist[u]) continue;
-		if (cost > cp_Omega_max) break;
-
-		neighbors.clear();
-		cp_ann_tree.extract_neighbors((point_cloud_types::Idx)u, CP_K, neighbors);
-
-		for (point_cloud_types::Idx v : neighbors) {
-			if (v < 0 || (size_t)v >= N) continue;
-
-			const vec3& pu = source_point_cloud.pnt(u);
-			const vec3& pv = source_point_cloud.pnt(v);
-			float w = cp_alpha_p * (length(pv - pu) / cp_avg_spacing);
-
-			if (has_normals && normals && (size_t)u < N && (size_t)v < N) {
-				vec3 nu = normals[u];
-				vec3 nv = normals[v];
-				float len_u = length(nu), len_v = length(nv);
-				if (len_u > 1e-6f && len_v > 1e-6f) {
-					float cos_a = std::abs(dot(nu / len_u, nv / len_v));
-					w += cp_alpha_n * (1.f - cos_a);
-				}
-			}
-
-			if (has_colors && (size_t)u < n_pc && (size_t)v < n_pc) {
-				auto cu = source_point_cloud.clr(u);
-				auto cv = source_point_cloud.clr(v);
-				float dr = cu.R() - cv.R();
-				float dg = cu.G() - cv.G();
-				float db = cu.B() - cv.B();
-				w += cp_alpha_c * std::sqrt(dr*dr + dg*dg + db*db);
-			}
-
-			float new_dist = cost + w;
-			if (new_dist < dist[(size_t)v] && new_dist <= cp_Omega_max) {
-				dist[(size_t)v] = new_dist;
-				label_result[(size_t)v] = lbl;
-				pq.push(Entry(new_dist, (uint32_t)v, lbl));
-			}
-		}
-	}
+	cp_propagate_labels();
 
 	// Write preview labels to GPU buffer, saving old values for undo/cancel
-	for (size_t i = 0; i < N; ++i) {
-		if (label_result[i] >= 0) {
-			cp_undo_buffer.push_back(std::make_pair((uint32_t)i, labels[i]));
-			labels[i] = label_result[i];
-		}
+	cp_undo_buffer.reserve(cp_touched.size());
+	for (const uint32_t i : cp_touched) {
+		if (i >= label_count || cp_label_result[i] < 0)
+			continue;
+		cp_undo_buffer.push_back(std::make_pair(i, labels[i]));
+		labels[i] = cp_label_result[i];
+		mark_dirty(i);
 	}
-	point_labels.upload();
+	if (dirty_lo <= dirty_hi)
+		point_labels.upload_range(dirty_lo, dirty_hi - dirty_lo + 1);
+
 	std::cout << "[CP] Preview: " << cp_undo_buffer.size() << " points from " << cp_control_points.size() << " CPs.\n";
 }
 
@@ -6090,12 +6199,8 @@ void pointcloud_labeling_tool::rollback_last_operation(cgv::render::context& ctx
 	// Unified chronological undo: always pop the newest entry regardless of mode
 	if (!cp_undo_buffer.empty()) {
 		// Active (unconfirmed) CP session — cancel the preview
-		auto& chunked_points = point_server_ptr->ref_chunks();
-		auto& point_labels = chunked_points.get_attribute(label_attribute_id);
-		GLint* labels = point_labels.data<GLint>();
-		for (auto& p : cp_undo_buffer) labels[p.first] = p.second;
-		point_labels.upload();
-		cp_undo_buffer.clear();
+		cp_restore_labels(cp_undo_buffer);
+		cp_preview_dirty = false;
 		std::cout << "[CP] Undo: cancelled active preview.\n";
 		return;
 	}
@@ -6104,12 +6209,9 @@ void pointcloud_labeling_tool::rollback_last_operation(cgv::render::context& ctx
 		unified_undo_stack.pop_back();
 		if (entry.is_cp) {
 			// CP confirmed label — restore CPU-side label buffer
-			auto& chunked_points = point_server_ptr->ref_chunks();
-			auto& point_labels = chunked_points.get_attribute(label_attribute_id);
-			GLint* labels = point_labels.data<GLint>();
-			for (auto& p : entry.cpu_labels) labels[p.first] = p.second;
-			point_labels.upload();
-			std::cout << "[CP] Undo: restored " << entry.cpu_labels.size() << " points.\n";
+			const size_t restored = entry.cpu_labels.size();
+			cp_restore_labels(entry.cpu_labels);
+			std::cout << "[CP] Undo: restored " << restored << " points.\n";
 			instance_to_semantic.erase(instance_counter - 1);
 			if (instance_counter > 1) { instance_counter--; recompute_instance_label(); }
 		} else {
@@ -6193,20 +6295,12 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 	// Discard CP session if leaving LABELING_3
 	if (interaction_mode == (int)InteractionMode::LABELING_3 && im != (InteractionMode)interaction_mode && cp_session_active) {
 		// Restore preview labels
-		if (!cp_undo_buffer.empty()) {
-			auto& chunked_points = point_server_ptr->ref_chunks();
-			auto& point_labels = chunked_points.get_attribute(label_attribute_id);
-			GLint* labels = point_labels.data<GLint>();
-			for (auto& p : cp_undo_buffer) {
-				labels[p.first] = p.second;
-			}
-			point_labels.upload();
-			cp_undo_buffer.clear();
-		}
+		cp_restore_labels(cp_undo_buffer);
 		cp_control_points.clear();
 		cp_session_active = false;
 		cp_ray_active = false;
 		cp_hit_valid = false;
+		cp_preview_dirty = false;
 		std::cout << "[CP] Session discarded on mode switch.\n";
 	}
 
