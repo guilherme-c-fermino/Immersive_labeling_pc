@@ -101,6 +101,12 @@ void vr_labels::init_frame(cgv::render::context& ctx)
 	if (!run_init_frame)
 		return;
 	for (int i = 0; i < get_num_labels(); ++i) {
+		// Only rebuild the labels whose content actually changed. Destroying and recreating the
+		// texture plus framebuffer of *every* label and re-rasterizing its text (including the
+		// mipmap generation below) whenever a single label changed is a driver heavy operation
+		// and was the dominant source of frame hitches while interacting with the palette.
+		if (!label_changed[i] && label_textures[i].is_created() && label_fbos[i].is_created())
+			continue;
 		int label_resolution = label_textures_resolution[i].x();
 		//if (label_fbos[i].get_width() != label_resolution) {
 			if (label_textures[i].is_created()) {

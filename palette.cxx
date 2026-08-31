@@ -370,7 +370,9 @@ namespace vrui {
 			li = palette_text_labels.add_label(txt, cgv::rgba(0.5, 0.5, 0.5, 0.75));
 		}
 		else {
-			palette_text_labels.set_label(li, txt, cgv::rgba(0.5, 0.5, 0.5, 0.75));
+			// update_label_text skips the rebuild when the text is unchanged; place_label below
+			// restores the placement that set_label would have reset anyway
+			palette_text_labels.update_label_text(li, txt);
 			//palette_text_labels.update_label_text(li, name);
 		}
 
@@ -460,7 +462,9 @@ namespace vrui {
 				
 				//auto& points = icosahedron_points();
 
-				tesselate_geodesic_sphere(1, sphere_points, sphere_triangles);
+				// the tessellation only depends on the constant subdivision level, so compute it once
+				if (sphere_points.empty())
+					tesselate_geodesic_sphere(1, sphere_points, sphere_triangles);
 
 				GLuint point_buffer = sphere_frame_point_buffer;
 				GLuint offset_buffer = sphere_frame_offset_buffer;
@@ -526,6 +530,10 @@ namespace vrui {
 		if (box_plane_indices.size())
 			palette_box_plane_renderer.render(ctx, 0, box_plane_indices.size());
 
+		// Collect the icons first and group them by texture. Every texture switch needs its own
+		// draw call, but all buttons that share an image can be drawn at once, which removes the
+		// four single element attribute uploads that each button used to issue on its own.
+		icon_draw_list.clear();
 		for (int i = 0; i < (int)palette_object_positions.size(); ++i) {
 			if (!palette_object_visibility[i])
 				continue;
@@ -562,19 +570,44 @@ namespace vrui {
 			if (!tex_ptr)
 				continue;
 
-			vec3 icon_position = palette_object_positions[i] + icon_offset;
-			quat icon_rot = icon_rotation;
-			cgv::math::fvec<float, 2> icon_extent(0.030f, 0.030f);
-			cgv::math::fvec<float, 4> icon_texcoord(0.0f, 0.0f, 1.0f, 1.0f);
+			icon_draw_list.emplace_back(tex_ptr, palette_object_positions[i] + icon_offset);
+		}
 
-			tex_ptr->enable(ctx, 0);
+		if (!icon_draw_list.empty()) {
+			std::stable_sort(icon_draw_list.begin(), icon_draw_list.end(),
+				[](const std::pair<cgv::render::texture*, vec3>& a, const std::pair<cgv::render::texture*, vec3>& b) {
+					return a.first < b.first;
+				});
+
+			static const cgv::math::fvec<float, 2> icon_extent(0.030f, 0.030f);
+			static const cgv::math::fvec<float, 4> icon_texcoord(0.0f, 0.0f, 1.0f, 1.0f);
 			palette_icon_renderer.set_render_style(p_icon_style);
-			palette_icon_renderer.set_position_array(ctx, &icon_position, 1);
-			palette_icon_renderer.set_rotation_array(ctx, &icon_rot, 1);
-			palette_icon_renderer.set_extent_array(ctx, &icon_extent, 1);
-			palette_icon_renderer.set_texcoord_array(ctx, &icon_texcoord, 1);
-			palette_icon_renderer.render(ctx, 0, 1);
-			tex_ptr->disable(ctx);
+
+			size_t begin = 0;
+			while (begin < icon_draw_list.size()) {
+				size_t end = begin + 1;
+				while (end < icon_draw_list.size() && icon_draw_list[end].first == icon_draw_list[begin].first)
+					++end;
+
+				const size_t count = end - begin;
+				icon_batch_positions.clear();
+				for (size_t k = begin; k < end; ++k)
+					icon_batch_positions.push_back(icon_draw_list[k].second);
+				icon_batch_rotations.assign(count, icon_rotation);
+				icon_batch_extents.assign(count, icon_extent);
+				icon_batch_texcoords.assign(count, icon_texcoord);
+
+				cgv::render::texture* tex_ptr = icon_draw_list[begin].first;
+				tex_ptr->enable(ctx, 0);
+				palette_icon_renderer.set_position_array(ctx, icon_batch_positions);
+				palette_icon_renderer.set_rotation_array(ctx, icon_batch_rotations);
+				palette_icon_renderer.set_extent_array(ctx, icon_batch_extents);
+				palette_icon_renderer.set_texcoord_array(ctx, icon_batch_texcoords);
+				palette_icon_renderer.render(ctx, 0, count);
+				tex_ptr->disable(ctx);
+
+				begin = end;
+			}
 		}
 
 		// Render cone icons on the palette toolbar
@@ -583,23 +616,23 @@ namespace vrui {
 			cgv::render::cone_render_style crs;
 			cr.set_render_style(crs);
 			float icon_size = 0.018f;
-			std::vector<vec3> cone_positions;
-			std::vector<float> cone_radii;
-			std::vector<cgv::rgba> cone_colors;
+			cone_scratch_positions.clear();
+			cone_scratch_radii.clear();
+			cone_scratch_colors.clear();
 			for (auto& ci : cone_indices) {
 				vec3 base = palette_object_positions[ci];
 				vec3 tip = base + vec3(0, icon_size * 2.0f, 0);
-				cone_positions.push_back(base);
-				cone_positions.push_back(tip);
-				cone_radii.push_back(icon_size * 0.5f);
-				cone_radii.push_back(0.0f);
-				cone_colors.push_back(palette_object_colors[ci]);
-				cone_colors.push_back(palette_object_colors[ci]);
+				cone_scratch_positions.push_back(base);
+				cone_scratch_positions.push_back(tip);
+				cone_scratch_radii.push_back(icon_size * 0.5f);
+				cone_scratch_radii.push_back(0.0f);
+				cone_scratch_colors.push_back(palette_object_colors[ci]);
+				cone_scratch_colors.push_back(palette_object_colors[ci]);
 			}
-			cr.set_position_array(ctx, cone_positions);
-			cr.set_radius_array(ctx, cone_radii);
-			cr.set_color_array(ctx, cone_colors);
-			cr.render(ctx, 0, cone_positions.size());
+			cr.set_position_array(ctx, cone_scratch_positions);
+			cr.set_radius_array(ctx, cone_scratch_radii);
+			cr.set_color_array(ctx, cone_scratch_colors);
+			cr.render(ctx, 0, cone_scratch_positions.size());
 		}
 
 		// Render cylinder icons on the palette toolbar
@@ -608,24 +641,24 @@ namespace vrui {
 			cgv::render::cone_render_style crs;
 			cr.set_render_style(crs);
 			float icon_size = 0.018f;
-			std::vector<vec3> cyl_positions;
-			std::vector<float> cyl_radii;
-			std::vector<cgv::rgba> cyl_colors;
+			cone_scratch_positions.clear();
+			cone_scratch_radii.clear();
+			cone_scratch_colors.clear();
 			for (auto& ci : cylinder_indices) {
 				vec3 center = palette_object_positions[ci];
 				vec3 left = center - vec3(icon_size, 0, 0);
 				vec3 right = center + vec3(icon_size, 0, 0);
-				cyl_positions.push_back(left);
-				cyl_positions.push_back(right);
-				cyl_radii.push_back(icon_size * 0.5f);
-				cyl_radii.push_back(icon_size * 0.5f);
-				cyl_colors.push_back(palette_object_colors[ci]);
-				cyl_colors.push_back(palette_object_colors[ci]);
+				cone_scratch_positions.push_back(left);
+				cone_scratch_positions.push_back(right);
+				cone_scratch_radii.push_back(icon_size * 0.5f);
+				cone_scratch_radii.push_back(icon_size * 0.5f);
+				cone_scratch_colors.push_back(palette_object_colors[ci]);
+				cone_scratch_colors.push_back(palette_object_colors[ci]);
 			}
-			cr.set_position_array(ctx, cyl_positions);
-			cr.set_radius_array(ctx, cyl_radii);
-			cr.set_color_array(ctx, cyl_colors);
-			cr.render(ctx, 0, cyl_positions.size());
+			cr.set_position_array(ctx, cone_scratch_positions);
+			cr.set_radius_array(ctx, cone_scratch_radii);
+			cr.set_color_array(ctx, cone_scratch_colors);
+			cr.render(ctx, 0, cone_scratch_positions.size());
 		}
 
 		if (sphere_frame_indices.size() > 0) {

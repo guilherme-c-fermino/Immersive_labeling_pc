@@ -90,6 +90,12 @@ public:
 
 
 	inline void update_label_text(int32_t li, const std::string& text) { 
+		if (li < 0 || (size_t)li >= label_text.size())
+			return;
+		// Re-setting identical text would mark the label dirty and force a full texture and
+		// framebuffer rebuild in the next init_frame, so bail out when nothing changed.
+		if (label_text[li] == text && label_textures[li].is_created())
+			return;
 		set_label(li, text, rgba(label_color[li].x(), label_color[li].y(), label_color[li].z(), 1.0));
 	}
 

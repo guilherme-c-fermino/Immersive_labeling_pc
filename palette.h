@@ -112,6 +112,17 @@ namespace vrui {
 		std::vector<cgv::vec3> sphere_points; 		/// stores points of a geodesic sphere
 		std::vector<unsigned> sphere_triangles; /// stores indices into sphere points defining triangle of a geodesic sphere
 
+		// scratch buffers reused by render_palette every frame; kept as members so the per frame
+		// icon/cone/cylinder rendering does not allocate and free a handful of vectors per eye
+		std::vector<std::pair<cgv::render::texture*, cgv::vec3>> icon_draw_list;
+		std::vector<cgv::vec3> icon_batch_positions;
+		std::vector<cgv::quat> icon_batch_rotations;
+		std::vector<cgv::math::fvec<float, 2>> icon_batch_extents;
+		std::vector<cgv::math::fvec<float, 4>> icon_batch_texcoords;
+		std::vector<cgv::vec3> cone_scratch_positions;
+		std::vector<float> cone_scratch_radii;
+		std::vector<cgv::rgba> cone_scratch_colors;
+
 		std::vector<cgv::vec3> point_cloud_positions;
 		std::vector<cgv::quat> point_cloud_rotations;
 		std::vector<float> point_cloud_scales;
