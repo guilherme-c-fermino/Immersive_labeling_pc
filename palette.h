@@ -62,7 +62,14 @@ namespace vrui {
 		std::vector<PaletteObject> palette_object_shapes; //geometric shapes of palette objects
 		std::vector<PaletteObjectGroup> palette_object_groups;
 		std::vector<bool> palette_object_visibility;
+		/// panel each object belongs to; panels can be shown/hidden as a whole
+		std::vector<int> palette_object_panel;
+		static constexpr int max_panels = 4;
+		bool palette_panel_visible[max_panels] = { true, true, true, true };
 		std::vector<cgv::vec3> palette_object_positions;
+		/// extra rotation per object, applied on top of the shape specific base orientation.
+		/// lets objects be arranged on panels that are turned relative to the palette pose.
+		std::vector<cgv::quat> palette_object_rotations;
 		std::vector<cgv::rgba> palette_object_colors;
 		std::vector<void*> palette_object_data;
 		std::vector<int> positions_in_group;
@@ -70,8 +77,15 @@ namespace vrui {
 		std::vector<std::string> palette_object_button_image_files;
 		std::vector<cgv::render::texture> palette_object_button_textures;
 		std::vector<bool> palette_object_button_texture_needs_upload;
+		std::vector<cgv::rgba> palette_object_icon_tints;
 		std::vector<int> palette_text_label_ids; //map containing text label ids for text attached to palette objects, -1 means no label is assigned
 		vr_labels palette_text_labels;
+		// How the text labels of palette objects are anchored. This has to match the pose handed
+		// to render_palette(): a palette floating in front of the head needs its labels in the head
+		// coordinate system, one held by a controller needs them on that controller.
+		CoordinateSystem label_coord_system = CS_LEFT_CONTROLLER;
+		/// base orientation that lays a label flat into the palettes local xz plane
+		cgv::quat label_base_orientation = cgv::quat(0.7071068f, -0.7071068f, 0.f, 0.f);
 
 		std::function<void(picked_object)> palette_picking_function;
 		int last_triggered_object;
@@ -114,9 +128,16 @@ namespace vrui {
 
 		// scratch buffers reused by render_palette every frame; kept as members so the per frame
 		// icon/cone/cylinder rendering does not allocate and free a handful of vectors per eye
-		std::vector<std::pair<cgv::render::texture*, cgv::vec3>> icon_draw_list;
+		struct icon_draw_entry {
+			cgv::render::texture* tex;
+			cgv::vec3 position;
+			cgv::quat rotation;
+			cgv::rgba tint;
+		};
+		std::vector<icon_draw_entry> icon_draw_list;
 		std::vector<cgv::vec3> icon_batch_positions;
 		std::vector<cgv::quat> icon_batch_rotations;
+		std::vector<cgv::rgba> icon_batch_colors;
 		std::vector<cgv::math::fvec<float, 2>> icon_batch_extents;
 		std::vector<cgv::math::fvec<float, 4>> icon_batch_texcoords;
 		std::vector<cgv::vec3> cone_scratch_positions;
@@ -139,6 +160,8 @@ namespace vrui {
 		virtual ~palette(); // virtual destructor so pointers to palettes can be dynamic casted (picked_object uses one)
 		/// @return number of objects in the palette
 		size_t num_objects() const;
+		/// (re)place the text label of \p obj_ix from its current position and the current label anchor
+		void place_object_label(unsigned int obj_ix);
 
 		cgv::render::shader_program& instanced_rendering_prog();
 	public:
@@ -192,6 +215,28 @@ namespace vrui {
 		
 		const std::string& get_label_text(unsigned obj_ix);
 
+		/// local position of a palette object; returns a zero vector for invalid ids
+		const cgv::vec3& object_position(const int id) const;
+		/// move a palette object inside the palettes local coordinate system and re-place its text label
+		void set_object_position(const int id, const cgv::vec3& position);
+		/// move and rotate a palette object; \p rotation is applied on top of the shape base orientation
+		void set_object_placement(const int id, const cgv::vec3& position, const cgv::quat& rotation);
+		/// assign an object to a panel so it can be shown/hidden together with the rest of that panel
+		void set_object_panel(const int id, const int panel);
+		/// show/hide a whole panel; combined with the per object visibility
+		void set_panel_visible(const int panel, const bool visible);
+		/// @return visibility of a whole panel
+		bool is_panel_visible(const int panel) const;
+		/// @return true if the object is visible on its own and its panel is shown
+		bool object_is_visible(const int id) const;
+		/// set the coordinate system the palette text labels are placed in; must match the frame
+		/// the pose handed to render_palette() is expressed in
+		void set_label_coordinate_system(CoordinateSystem coord_system);
+		/// access to the label renderer, e.g. to drive CS_CUSTOM
+		vr_labels& ref_text_labels() { return palette_text_labels; }
+		/// re-place every existing text label, e.g. after objects moved or the label anchor changed
+		void refresh_label_placement();
+
 		// set a pointer that is passed to the objects functor if invoked by trigger_function(..)
 		void set_object_data(const int id, void* data_ptr);
 		// renders the palette, call this inside your draw loop
@@ -204,8 +249,23 @@ namespace vrui {
 		void set_object_visibility(int id, bool visible) {
 			if (id >= 0 && id < (int)palette_object_visibility.size()) {
 				palette_object_visibility[id] = visible;
+				refresh_object_label_visibility(id);
 				set_palette_changed();
 			}
+		}
+		/// show or hide the text label of an object according to its own and its panels visibility.
+		/// Every path that changes label text or visibility has to go through this, otherwise a
+		/// label can outlive the object it belongs to (e.g. re-labelling a button on a hidden panel).
+		void refresh_object_label_visibility(int id) {
+			if (id < 0 || id >= (int)palette_text_label_ids.size())
+				return;
+			const int li = palette_text_label_ids[id];
+			if (li < 0)
+				return;
+			if (object_is_visible(id))
+				palette_text_labels.show_label(li);
+			else
+				palette_text_labels.hide_label(li);
 		}
 		/// hide the text label associated with a palette object (safe to call with invalid id or before label is created)
 		void hide_object_label(int id) {
@@ -215,13 +275,9 @@ namespace vrui {
 					palette_text_labels.hide_label(li);
 			}
 		}
-		/// show the text label associated with a palette object (safe to call with invalid id or before label is created)
+		/// show the text label of a palette object, unless the object or its panel is hidden
 		void show_object_label(int id) {
-			if (id >= 0 && id < (int)palette_text_label_ids.size()) {
-				int li = palette_text_label_ids[id];
-				if (li >= 0)
-					palette_text_labels.show_label(li);
-			}
+			refresh_object_label_visibility(id);
 		}
 		/// indicate that the palette was changed so class internal render code can react to it
 		void set_palette_changed();
@@ -232,6 +288,8 @@ namespace vrui {
 		void set_object_uses_button_image(int id, bool use_image = true);
 		/// set an image file for one palette object; if empty, fallback image from set_buttons_image_file() is used
 		void set_object_button_image_file(int id, const std::string& file_name);
+		/// tint multiplier for one button icon (1,1,1,1 keeps the original icon colors)
+		void set_object_icon_tint(int id, const cgv::rgba& tint);
 
 		void init_text_labels(cgv::render::context& ctx, vr_view_interactor* vr_view_ptr);
 

@@ -372,6 +372,29 @@ void pointcloud_labeling_tool::on_set(void * member_ptr)
 		reduce_time_cpu.resize(sliding_window_size);
 		reduce_time_gpu.resize(sliding_window_size);
 	}
+	else if (member_ptr == &palette_position) {
+		apply_palette_layout();
+		// the frozen anchor belongs to the previous mode, so re-capture it in the new one
+		if (palette_lock_side_panels)
+			apply_palette_lock();
+		refresh_dynamic_button_icons();
+	}
+	else if (member_ptr == &palette_head_distance ||
+		member_ptr == &palette_head_height || member_ptr == &palette_panel_angle_deg ||
+		member_ptr == &palette_toggle_drop || member_ptr == &palette_toggle_pull ||
+		member_ptr == &palette_button_tilt ||
+		member_ptr == &palette_split_panels) {
+		apply_palette_layout();
+	}
+	else if (member_ptr == &palette_show_colour_panel) {
+		refresh_palette_panel_visibility();
+	}
+	else if (member_ptr == &palette_show_function_panel) {
+		refresh_palette_panel_visibility();
+	}
+	else if (member_ptr == &palette_lock_side_panels) {
+		apply_palette_lock();
+	}
 	else if (member_ptr == &interaction_mode) {
 		update_interaction_mode((InteractionMode)interaction_mode);
 	}
@@ -1065,8 +1088,17 @@ void pointcloud_labeling_tool::init_frame(cgv::render::context& ctx)
 		controller_labels[1].init_frame(ctx);
 	}
 
-	if (is_labeling_mode(interaction_mode))
+	if (is_labeling_mode(interaction_mode)) {
+		// advance the yaw follow filter before anything reads the palette pose this frame
+		update_palette_anchor();
+		update_panel_followers();
+		refresh_palette_panel_visibility();
+		refresh_button_icon_tints();
+		// the labels always live in the same frame the palette is rendered in, no matter
+		// whether that is the controller, the follow anchor or a frozen lock frame
+		palette.ref_text_labels().set_custom_coordinate_system(current_palette_pose());
 		palette.init_frame(ctx);
+	}
 
 	// show/hide instance counter label based on mode
 	if (instance_counter_label_id != (uint32_t)-1) {
@@ -1850,15 +1882,14 @@ void pointcloud_labeling_tool::draw(cgv::render::context & ctx)
 	case InteractionMode::LABELING_3:
 	case InteractionMode::LABELING_2:
 	case InteractionMode::LABELING: {
-		const bool palette_active = is_palette_activation_pose();
-		if (palette_active) {
-			if (palette_position == PalettePosition::HEADON)
-			{
-				palette.render_palette(ctx, hmd_trans_palette);
-			}
-			else if(palette_position == PalettePosition::LEFTHAND)
-				palette.render_palette(ctx, controller_poses[palette_hand]);
+		// The bottom toggle panel always stays visible; the wrist pose only gates the colour and
+		// function panels, which refresh_palette_panel_visibility() handles.
+		if (palette_position == PalettePosition::HEADON)
+		{
+			palette.render_palette(ctx, hmd_trans_palette);
 		}
+		else
+			palette.render_palette(ctx, current_palette_pose());
 
 		//set color
 		rgba color;
@@ -2169,6 +2200,7 @@ void pointcloud_labeling_tool::build_palette()
 
 		static constexpr int num_interactive_palette_slots = 25;
 		int ix = po.id();
+		flash_button_icon(ix);
 		paste_pointcloud_follow_controller = false;
 
 		switch (po.object_group()) {
@@ -2437,8 +2469,7 @@ void pointcloud_labeling_tool::build_palette()
 
 			// Common buttons for all labeling modes (rows 3-5)
 			if (pos == 4) {
-				// UNDO
-				rollback_last_operation(*get_context());
+				// UNDO				rollback_last_operation(*get_context());
 			}
 			else if (pos == 5) {
 				// SEM: switch to semantic color view
@@ -2466,6 +2497,31 @@ void pointcloud_labeling_tool::build_palette()
 				instance_counter = std::max(0, instance_counter - 1);
 				recompute_instance_label();
 			}
+			else if (pos == vrui::label_palette::first_toggle_position) {
+				// bottom panel, left button: show/hide the colour panel
+				palette_show_colour_panel = !palette_show_colour_panel;
+				refresh_palette_panel_visibility();
+				update_member(&palette_show_colour_panel);
+			}
+			else if (pos == vrui::label_palette::first_toggle_position + 1) {
+				// bottom panel, middle button: lock/unlock the side panels in world space
+				palette_lock_side_panels = !palette_lock_side_panels;
+				apply_palette_lock();
+				update_member(&palette_lock_side_panels);
+			}
+			else if (pos == vrui::label_palette::first_toggle_position + 2) {
+				// bottom panel, right button: show/hide the function button panel
+				palette_show_function_panel = !palette_show_function_panel;
+				refresh_palette_panel_visibility();
+				update_member(&palette_show_function_panel);
+			}
+			else if (pos == vrui::label_palette::first_toggle_position + 3) {
+				// bottom panel, upper middle button: switch between the flat palette held by
+				// the controller and the two floating panels in front of the view
+				set_palette_mode(palette_position == (int)PalettePosition::HEAD_SIDES
+					? (int)PalettePosition::LEFTHAND
+					: (int)PalettePosition::HEAD_SIDES);
+			}
 			// pos 0-3 (paint-mode above or ignored), pos 8 (display, read-only), pos 10-11 (empty): do nothing
 			break;
 		}
@@ -2475,15 +2531,6 @@ void pointcloud_labeling_tool::build_palette()
 	//build palette
 	palette.build(PALETTE_COLOR_MAPPING);
 	{
-		auto resolve_button_icon = [&](const std::string& file_name) -> std::string {
-			std::string p = cgv::base::find_data_file("buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
-			if (p.empty())
-				p = cgv::base::find_data_file("Immersive_labeling_pc/buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
-			if (p.empty())
-				p = "buttons_images/" + file_name;
-			return p;
-		};
-
 		const std::string blank_image = resolve_button_icon("BLANK.png");
 		palette.set_buttons_image_file(blank_image);
 
@@ -2503,6 +2550,15 @@ void pointcloud_labeling_tool::build_palette()
 				palette.set_object_uses_button_image(id, true);
 		}
 
+		// The panel toggles look like the function buttons; blank icon for now.
+		for (int t = 0; t < vrui::label_palette::num_toggles; ++t) {
+			int id = palette.get_toggle_id(t);
+			if (palette.object_id_is_valid(id)) {
+				palette.set_object_uses_button_image(id, true);
+				palette.set_object_button_image_file(id, blank_image);
+			}
+		}
+
 		// Static icon mapping independent of interaction mode.
 		{
 			int id;
@@ -2516,6 +2572,9 @@ void pointcloud_labeling_tool::build_palette()
 			id = palette.get_shortcut_id(11); if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, cancel_image);
 			id = palette.get_shortcut_id(12); if (palette.object_id_is_valid(id)) palette.set_object_button_image_file(id, blank_image);
 		}
+
+		// icons that depend on a toggle state (CP parameter, palette lock, palette mode)
+		refresh_dynamic_button_icons();
 	}
 	palette.set_function(palette_picking_func);
 
@@ -2544,6 +2603,8 @@ void pointcloud_labeling_tool::build_palette()
 			//palette.set_object_data(id, &selection_brush);
 		}
 	}
+	// position the palette and anchor its labels for the configured palette_position
+	apply_palette_layout();
 }
 
 /// (right vr controller) render the palette(only the sphere selection primitive)
@@ -2653,6 +2714,14 @@ void pointcloud_labeling_tool::render_palette_cylinder_on_rhand(cgv::render::con
 
 bool pointcloud_labeling_tool::is_palette_activation_pose() const
 {
+	// A head anchored palette is not held by a controller, so the wrist orientation gate
+	// does not apply to it.
+	if (palette_position == (int)PalettePosition::HEAD_SIDES)
+		return true;
+	// While locked the hand mounted palette is detached from the controller as well, so the
+	// wrist would otherwise blink it away.
+	if (palette_lock_side_panels)
+		return true;
 	if (!palette_pose_gate_enabled)
 		return true;
 	if (!vr_view_ptr || !vr_view_ptr->get_current_vr_state())
@@ -2677,6 +2746,412 @@ bool pointcloud_labeling_tool::is_palette_activation_pose() const
 		yaw_deg >= palette_yaw_lower_limit_deg && yaw_deg <= palette_yaw_upper_limit_deg &&
 		pitch_deg >= palette_pitch_lower_limit_deg && pitch_deg <= palette_pitch_upper_limit_deg &&
 		roll_deg >= palette_roll_lower_limit_deg && roll_deg <= palette_roll_upper_limit_deg;
+}
+
+/// Transform that turns the palettes local xz "tray" layout into an upright panel:
+/// local +x stays right, local +y (the tray normal) points towards the viewer and
+/// local -z becomes up, so rows further back in the tray appear higher on the panel.
+static cgv::mat3 palette_upright_rotation()
+{
+	cgv::mat3 upright;
+	upright.set_col(0, cgv::vec3(1.f, 0.f, 0.f));
+	upright.set_col(1, cgv::vec3(0.f, 0.f, 1.f));
+	upright.set_col(2, cgv::vec3(0.f, -1.f, 0.f));
+	return upright;
+}
+
+/// rotation about the world up axis
+static cgv::mat3 palette_yaw_rotation(float yaw_rad)
+{
+	const float c = std::cos(yaw_rad), s = std::sin(yaw_rad);
+	cgv::mat3 r;
+	r.set_col(0, cgv::vec3(c, 0.f, -s));
+	r.set_col(1, cgv::vec3(0.f, 1.f, 0.f));
+	r.set_col(2, cgv::vec3(s, 0.f, c));
+	return r;
+}
+
+/// rotation about the horizontal (right) axis; positive values tip the panel normal downwards
+static cgv::mat3 palette_pitch_rotation(float pitch_rad)
+{
+	const float c = std::cos(pitch_rad), s = std::sin(pitch_rad);
+	cgv::mat3 r;
+	r.set_col(0, cgv::vec3(1.f, 0.f, 0.f));
+	r.set_col(1, cgv::vec3(0.f, c, s));
+	r.set_col(2, cgv::vec3(0.f, -s, c));
+	return r;
+}
+
+void pointcloud_labeling_tool::update_palette_anchor()
+{
+	// The bottom toggle panel lives in this frame in every palette mode, so the filter has to
+	// keep running even while the colour/function panels ride on the controller.
+	const vr::vr_kit_state* state_ptr = vr_view_ptr ? vr_view_ptr->get_current_vr_state() : nullptr;
+	if (!state_ptr || state_ptr->hmd.status != vr::VRS_TRACKED)
+		return;
+
+	// Only the heading of the head is followed. Pitch and roll are deliberately ignored so
+	// looking up/down or tilting does not move the panels.
+	// palette_yaw_rotation(y) maps the reference forward (0,0,-1) to (-sin y, 0, -cos y),
+	// so the heading that reproduces the current forward vector is atan2(-fx, -fz).
+	const vec3 forward = -cgv::math::pose_orientation(hmd_pose34).col(2);
+	const float target_yaw = std::atan2(-forward.x(), -forward.z());
+	const vec3 target_position = cgv::math::pose_position(hmd_pose34);
+
+	const auto now = std::chrono::steady_clock::now();
+	if (!palette_follow_yaw_valid) {
+		palette_follow_yaw = target_yaw;
+		palette_follow_position = target_position;
+		palette_follow_yaw_valid = true;
+		palette_follow_last_update = now;
+		return;
+	}
+
+	float dt = (float)std::chrono::duration<double>(now - palette_follow_last_update).count();
+	palette_follow_last_update = now;
+	dt = std::min(std::max(dt, 0.f), 0.25f); // ignore hitches so the panel cannot jump
+
+	// exponential approach; palette_follow_time is the time constant of the lag
+	const float alpha = (palette_follow_time > 1e-3f)
+		? (1.f - std::exp(-dt / palette_follow_time))
+		: 1.f;
+
+	// interpolate along the shortest arc so crossing +-180 degrees does not spin the panel
+	float delta = target_yaw - palette_follow_yaw;
+	while (delta > (float)M_PI) delta -= 2.f * (float)M_PI;
+	while (delta < -(float)M_PI) delta += 2.f * (float)M_PI;
+
+	// Dead zone: turning the head inside it leaves the panels untouched. Only the part of the
+	// rotation beyond the dead zone is followed, so the panels always trail the head by exactly
+	// the dead zone angle once it is exceeded.
+	const float deadband = std::abs(cgv::math::deg2rad(palette_follow_deadband_deg));
+	float excess = 0.f;
+	if (delta > deadband)
+		excess = delta - deadband;
+	else if (delta < -deadband)
+		excess = delta + deadband;
+	palette_follow_yaw += alpha * excess;
+
+	palette_follow_position += alpha * (target_position - palette_follow_position);
+}
+
+cgv::mat34 pointcloud_labeling_tool::head_palette_anchor() const
+{
+	// Yaw-only frame that follows the users heading and position but stays upright regardless
+	// of where the head is looking. The bottom toggle panel always lives in this frame.
+	if (!palette_follow_yaw_valid)
+		return controller_poses[palette_hand];
+	return cgv::math::pose_construct(palette_yaw_rotation(palette_follow_yaw), palette_follow_position);
+}
+
+cgv::mat34 pointcloud_labeling_tool::live_palette_anchor() const
+{
+	// Hand mounted modes ride on the controller, the floating mode uses the head anchor.
+	if (palette_position != (int)PalettePosition::HEAD_SIDES)
+		return controller_poses[palette_hand];
+	return head_palette_anchor();
+}
+
+cgv::mat34 pointcloud_labeling_tool::current_palette_pose() const
+{
+	// While locked the palette is drawn in the frame captured when the lock was engaged, which
+	// leaves it standing still in the world. This works the same way in both palette modes.
+	if (palette_lock_side_panels)
+		return palette_locked_anchor;
+
+	return live_palette_anchor();
+}
+
+void pointcloud_labeling_tool::update_panel_followers()
+{
+	if (palette_follow_object_ids.empty())
+		return;
+
+	// The whole palette is drawn with a single pose, so the bottom panel - which is placed in
+	// the head anchor frame - has to be expressed in the rendered frame:
+	// rendered^-1 * head_anchor * placement_in_head_anchor.
+	const mat34 base = current_palette_pose();
+	const mat34 live = head_palette_anchor();
+	const mat3 base_inverse = cgv::math::transpose(cgv::math::pose_orientation(base));
+	const mat3 relative_rotation = base_inverse * cgv::math::pose_orientation(live);
+	const vec3 relative_position = base_inverse * (cgv::math::pose_position(live) - cgv::math::pose_position(base));
+	const mat34 relative = cgv::math::pose_construct(relative_rotation, relative_position);
+
+	// skip the work (and the palette rebuild it triggers) while nothing moves
+	if (palette_last_follow_rel_valid) {
+		float max_difference = 0.f;
+		for (unsigned c = 0; c < 4; ++c)
+			for (unsigned r = 0; r < 3; ++r)
+				max_difference = std::max(max_difference, std::abs(relative(r, c) - palette_last_follow_rel(r, c)));
+		if (max_difference < 1e-4f)
+			return;
+	}
+	palette_last_follow_rel = relative;
+	palette_last_follow_rel_valid = true;
+
+	for (size_t i = 0; i < palette_follow_object_ids.size(); ++i) {
+		const vec3 position = relative_rotation * palette_follow_object_pos[i] + relative_position;
+		const mat3 rotation = relative_rotation * palette_follow_object_rot[i].get_matrix();
+		palette.set_object_placement(palette_follow_object_ids[i], position, quat(rotation));
+	}
+}
+
+const std::string& pointcloud_labeling_tool::resolve_button_icon(const std::string& file_name)
+{
+	auto it = button_icon_paths.find(file_name);
+	if (it != button_icon_paths.end())
+		return it->second;
+	std::string p = cgv::base::find_data_file("buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
+	if (p.empty())
+		p = cgv::base::find_data_file("Immersive_labeling_pc/buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
+	if (p.empty())
+		p = "buttons_images/" + file_name;
+	return button_icon_paths.emplace(file_name, p).first->second;
+}
+
+void pointcloud_labeling_tool::refresh_dynamic_button_icons()
+{
+	// CP parameter cycle button (shortcut 12): one icon per selectable parameter
+	static const char* cp_param_icons[4] = {
+		"CP_MAX_ICON.png",    // 0: Omega_max
+		"CP_POS_ICON.png",    // 1: alpha_p
+		"CP_NORMAL_ICON.png", // 2: alpha_n
+		"CP_COL_ICON.png"     // 3: alpha_c
+	};
+	int id = palette.get_shortcut_id(12);
+	if (palette.object_id_is_valid(id) && cp_selected_param >= 0 && cp_selected_param < 4)
+		palette.set_object_button_image_file(id, resolve_button_icon(cp_param_icons[cp_selected_param]));
+
+	// bottom panel, middle button: shows whether the palette is locked in world space
+	id = palette.get_toggle_id(1);
+	if (palette.object_id_is_valid(id))
+		palette.set_object_button_image_file(id,
+			resolve_button_icon(palette_lock_side_panels ? "LOCK_BUTT.png" : "UNLOCK_BUTT.png"));
+
+	// bottom panel, upper middle button: shows the active palette mode
+	id = palette.get_toggle_id(3);
+	if (palette.object_id_is_valid(id))
+		palette.set_object_button_image_file(id,
+			resolve_button_icon(palette_position == (int)PalettePosition::HEAD_SIDES
+				? "FLOAT_BUTT.png" : "PALETTE_BUTT.png"));
+
+	palette.set_palette_changed();
+}
+
+void pointcloud_labeling_tool::flash_button_icon(int id)
+{
+	if (!palette.object_id_is_valid(id))
+		return;
+	// The instance counter placeholder stays visually neutral.
+	if (id == palette.get_shortcut_id(8))
+		return;
+	palette_icon_flash_until[id] = std::chrono::steady_clock::now() +
+		std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+			std::chrono::duration<double>(palette_icon_flash_duration));
+}
+
+void pointcloud_labeling_tool::refresh_button_icon_tints()
+{
+	const rgba normal_tint(1.0f, 1.0f, 1.0f, 1.0f);
+	const rgba dark_tint(0.5f, 0.5f, 0.5f, 1.0f);
+
+	const auto now = std::chrono::steady_clock::now();
+	for (auto it = palette_icon_flash_until.begin(); it != palette_icon_flash_until.end(); ) {
+		if (it->second <= now)
+			it = palette_icon_flash_until.erase(it);
+		else
+			++it;
+	}
+
+	for (int id = 0; palette.object_id_is_valid(id); ++id)
+		palette.set_object_icon_tint(id, normal_tint);
+
+	// Persistent selection state: shown panel buttons are dark, hidden panel buttons are bright.
+	int id_left = palette.get_toggle_id(0);
+	if (palette.object_id_is_valid(id_left) && palette_show_colour_panel)
+		palette.set_object_icon_tint(id_left, dark_tint);
+
+	int id_right = palette.get_toggle_id(2);
+	if (palette.object_id_is_valid(id_right) && palette_show_function_panel)
+		palette.set_object_icon_tint(id_right, dark_tint);
+
+	// Common state pair in labeling modes: semantic vs instance view.
+	int id_sem = palette.get_shortcut_id(5);
+	int id_inst = palette.get_shortcut_id(6);
+	if (palette.object_id_is_valid(id_sem) && palette.object_id_is_valid(id_inst)) {
+		if (show_instance_colors)
+			palette.set_object_icon_tint(id_inst, dark_tint);
+		else
+			palette.set_object_icon_tint(id_sem, dark_tint);
+	}
+
+	// Mode-specific state pair: row-2 left/right buttons are mutually exclusive states.
+	int id_left_state = palette.get_shortcut_id(2);
+	int id_right_state = palette.get_shortcut_id(3);
+	if (palette.object_id_is_valid(id_left_state) && palette.object_id_is_valid(id_right_state)) {
+		switch ((InteractionMode)interaction_mode) {
+		case InteractionMode::LABELING:
+			// painter_outpaint_mode=false => IN selected; true => OUT selected
+			palette.set_object_icon_tint(painter_outpaint_mode ? id_right_state : id_left_state, dark_tint);
+			break;
+		case InteractionMode::LABELING_2:
+			// sculpt_incrop_mode=true => IN selected; false => OUT selected
+			palette.set_object_icon_tint(sculpt_incrop_mode ? id_left_state : id_right_state, dark_tint);
+			break;
+		case InteractionMode::LABELING_3:
+			// cp_subtractive_mode=false => ADD P selected; true => DEL P selected
+			palette.set_object_icon_tint(cp_subtractive_mode ? id_right_state : id_left_state, dark_tint);
+			break;
+		default:
+			break;
+		}
+	}
+
+	// Short click/toggle feedback wins over persistent state.
+	for (const auto& kv : palette_icon_flash_until) {
+		if (palette.object_id_is_valid(kv.first))
+			palette.set_object_icon_tint(kv.first, dark_tint);
+	}
+}
+
+void pointcloud_labeling_tool::refresh_palette_panel_visibility()
+{
+	// The bottom toggle panel is the main menu of the labeling modes: it always follows the user
+	// and is never hidden. Only the colour and function panels obey the toggles and the wrist
+	// activation gate. set_panel_visible() ignores redundant calls, so this is cheap per frame.
+	const bool gate_open = is_palette_activation_pose();
+	palette.set_panel_visible(0, palette_show_colour_panel && gate_open);
+	palette.set_panel_visible(1, palette_show_function_panel && gate_open);
+	palette.set_panel_visible(2, true);
+}
+
+void pointcloud_labeling_tool::apply_palette_lock()
+{
+	if (palette_lock_side_panels) {
+		// Freeze the frame the palette is drawn in. The side panels are already placed in it,
+		// so they simply stop moving; only the bottom panel has to be corrected per frame.
+		palette_locked_anchor = live_palette_anchor();
+		std::cout << "[Palette] Side panels locked in place.\n";
+	}
+	else {
+		std::cout << "[Palette] Side panels follow the view again.\n";
+	}
+	palette_last_follow_rel_valid = false;
+	refresh_dynamic_button_icons();
+}
+
+void pointcloud_labeling_tool::set_palette_mode(int position)
+{
+	if (palette_position == position)
+		return;
+	palette_position = position;
+	apply_palette_layout();
+	// the frozen anchor was captured in the frame of the previous mode, so re-capture it in
+	// the new one instead of leaving the palette somewhere behind
+	if (palette_lock_side_panels)
+		apply_palette_lock();
+	refresh_dynamic_button_icons();
+	update_member(&palette_position);
+}
+
+void pointcloud_labeling_tool::apply_palette_layout()
+{	// capture the layout produced by build() once so repeated re-layouts stay idempotent
+	if (palette_base_positions.empty()) {
+		for (int id = 0; palette.object_id_is_valid(id); ++id)
+			palette_base_positions.push_back(palette.object_position(id));
+	}
+	if (palette_base_positions.empty())
+		return;
+
+	const size_t count = palette_base_positions.size();
+	const bool head_anchored = (palette_position == (int)PalettePosition::HEAD_SIDES);
+
+	// Panel 0: colour grid, brush shapes and clipboard. Panel 1: the function buttons.
+	// Panel 2: the two toggles that switch panel 0 and panel 1 on and off.
+	std::vector<int> panel_of(count, 0);
+	for (int pos = 0; pos < 13; ++pos) {
+		const int id = palette.get_shortcut_id(pos);
+		if (id >= 0 && (size_t)id < count)
+			panel_of[id] = 1;
+	}
+	for (int i = 0; i < vrui::label_palette::num_toggles; ++i) {
+		const int id = palette.get_toggle_id(i);
+		if (id >= 0 && (size_t)id < count)
+			panel_of[id] = 2;
+	}
+	for (size_t id = 0; id < count; ++id)
+		palette.set_object_panel((int)id, panel_of[id]);
+
+	palette_follow_object_ids.clear();
+	palette_follow_object_pos.clear();
+	palette_follow_object_rot.clear();
+	palette_last_follow_rel_valid = false;
+
+	// Centre each panel on its own content so every panel ends up centred on its direction.
+	vec3 centre[3] = { vec3(0.f), vec3(0.f), vec3(0.f) };
+	int members[3] = { 0, 0, 0 };
+	for (size_t id = 0; id < count; ++id) {
+		centre[panel_of[id]] += palette_base_positions[id];
+		++members[panel_of[id]];
+	}
+	for (int panel = 0; panel < 3; ++panel)
+		if (members[panel] > 0)
+			centre[panel] /= (float)members[panel];
+
+	const mat3 upright = palette_upright_rotation();
+	const float angle = cgv::math::deg2rad(palette_panel_angle_deg);
+
+	for (size_t id = 0; id < count; ++id) {
+		const int panel = panel_of[id];
+
+		// In the hand mounted mode only the bottom toggle panel stays floating in front of the
+		// user; the colour grid and the function buttons go back onto the flat controller tray.
+		if (!head_anchored && panel != 2) {
+			palette.set_object_placement((int)id, palette_base_positions[id], quat(1.f, 0.f, 0.f, 0.f));
+			continue;
+		}
+
+		// colours swing to +angle, function buttons to -angle, the toggles stay dead ahead
+		float panel_yaw = 0.f;
+		if (palette_split_panels && panel == 0)
+			panel_yaw = angle;
+		else if (palette_split_panels && panel == 1)
+			panel_yaw = -angle;
+		const mat3 yaw = palette_yaw_rotation(panel_yaw);
+
+		// object offset inside its upright panel, then push the panel out along its own forward
+		const vec3 in_panel = upright * (palette_base_positions[id] - centre[panel]);
+		const float height = palette_head_height + ((panel == 2) ? palette_toggle_drop : 0.f);
+		const float distance = palette_head_distance - ((panel == 2) ? palette_toggle_pull : 0.f);
+		const vec3 panel_centre(0.f, height, -std::max(distance, 0.05f));
+		const vec3 in_anchor = in_panel + panel_centre;
+
+		// Static vertical tilt: a button above eye level tips down, one below tips up, so every
+		// button faces the headset centre. This is what makes the low bottom panel readable and
+		// it applies to every row of every panel. Only the orientation changes, the buttons stay
+		// on their flat panel.
+		const float depth = std::max(-in_anchor.z(), 0.05f);
+		const float pitch = palette_button_tilt * std::atan2(in_anchor.y(), depth);
+
+		const vec3 position = yaw * in_anchor;
+
+		// the panel faces back at the user: its +z (which upright maps the tray normal to)
+		// points from the panel towards the anchor
+		const quat rotation = quat(mat3(yaw * palette_pitch_rotation(pitch) * upright));
+		palette.set_object_placement((int)id, position, rotation);
+
+		// remember the head anchor frame placement of the bottom panel; it always follows the
+		// user, so update_panel_followers() re-expresses it in whatever frame is rendered
+		if (panel == 2) {
+			palette_follow_object_ids.push_back((int)id);
+			palette_follow_object_pos.push_back(position);
+			palette_follow_object_rot.push_back(rotation);
+		}
+	}
+
+	palette.set_label_coordinate_system(CS_CUSTOM);
+	refresh_palette_panel_visibility();
+	palette.set_palette_changed();
 }
 ///
 bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
@@ -2821,16 +3296,14 @@ bool pointcloud_labeling_tool::handle(cgv::gui::event & e)
 			// pick a label 
 			if (is_labeling_mode(interaction_mode))
 			{
-				const bool palette_active = is_palette_activation_pose();
 				vec3 picking_position_rhand = cgv::math::pose_position(controller_poses[point_selection_hand]) + curr_offset_rhand;
-				if (palette_active) {
+				{
 					float dist;
 					// check for picked object, calls function given by palette.set_function(f) if something was picked
-					int nearest_palette_idx = palette.trigger_object(picking_position_rhand, controller_poses[palette_hand], dist);
+					// the pose has to be the same one render_palette() is called with; hidden panels are
+					// skipped inside pick_object(), so the wrist gate needs no extra handling here
+					int nearest_palette_idx = palette.trigger_object(picking_position_rhand, current_palette_pose(), dist);
 					(void)nearest_palette_idx;
-				}
-				else {
-					palette.reset_trigger_state();
 				}
 
 				// continue based labeling tool mode
@@ -5155,6 +5628,7 @@ void pointcloud_labeling_tool::update_cp_params_label() {
 			palette.set_palette_changed();
 		}
 	}
+	refresh_dynamic_button_icons();
 }
 
 void pointcloud_labeling_tool::cp_update_preview() {
@@ -6350,13 +6824,8 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 		const bool in_cp     = (im == InteractionMode::LABELING_3);
 		const bool show_size_inout = (in_paint || in_sculpt);
 
-		auto resolve_button_icon = [&](const std::string& file_name) -> std::string {
-			std::string p = cgv::base::find_data_file("buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
-			if (p.empty())
-				p = cgv::base::find_data_file("Immersive_labeling_pc/buttons_images/" + file_name, "MD", QUOTE_SYMBOL_VALUE(INPUT_DIR));
-			if (p.empty())
-				p = "buttons_images/" + file_name;
-			return p;
+		auto resolve_button_icon = [&](const std::string& file_name) -> const std::string& {
+			return this->resolve_button_icon(file_name);
 		};
 		const std::string size_up_image   = resolve_button_icon("SIZE_UP_BUTT.png");
 		const std::string size_down_image = resolve_button_icon("SIZE_DOWN_BUTT.png");
@@ -6408,6 +6877,7 @@ void pointcloud_labeling_tool::update_interaction_mode(const InteractionMode im)
 			} else {
 				palette.hide_object_label(id); // ensure text label is hidden when not in CP mode
 			}
+			refresh_dynamic_button_icons();
 		}
 		// Row 6 (positions 10-11): hidden in paint, COMMIT/CANCEL in sculpt and CP
 		{
@@ -6750,6 +7220,31 @@ void pointcloud_labeling_tool::create_gui()
 		add_member_control(this, "radius", teleport_spere_radius_factor, "value_slider", "min=0.0f;max=0.2f;log=false;ticks=true");
 		add_member_control(this, "ray radius", teleport_ray_radius, "value_slider", "min=0.0f;max=0.2f;log=false;ticks=true");
 		add_member_control(this, "show ray", show_teleport_ray, "toggle");
+		align("\b");
+	}
+	if (begin_tree_node("Palette", gui_palette, gui_palette)) {
+		align("\a");
+		add_member_control(this, "position", (DummyEnum&)palette_position, "dropdown",
+			"enums='head on=0;right hand=1;left hand=2;floating in view=3'");
+		add_member_control(this, "distance", palette_head_distance, "value_slider", "min=0.3;max=1.5;step=0.01;ticks=true");
+		add_member_control(this, "height offset", palette_head_height, "value_slider", "min=-0.6;max=0.4;step=0.01;ticks=true");
+		add_member_control(this, "split panels", palette_split_panels, "check",
+			"tooltip='colours to one side of the forward direction, function buttons to the other'");
+		add_member_control(this, "panel angle", palette_panel_angle_deg, "value_slider", "min=0;max=90;step=1;ticks=true");
+		add_member_control(this, "toggle panel drop", palette_toggle_drop, "value_slider", "min=-0.8;max=0.0;step=0.01;ticks=true",
+			"tooltip='how far below the side panels the two toggle buttons sit'");
+		add_member_control(this, "toggle panel pull", palette_toggle_pull, "value_slider", "min=0.0;max=0.3;step=0.01;ticks=true",
+			"tooltip='how much closer to you the bottom toggle panel sits than the side panels'");
+		add_member_control(this, "button tilt", palette_button_tilt, "value_slider", "min=0.0;max=1.0;step=0.05;ticks=true",
+			"tooltip='vertical tilt of each button towards the headset centre, 0 keeps panels perfectly vertical'");
+		add_member_control(this, "show colour panel", palette_show_colour_panel, "check");
+		add_member_control(this, "show function panel", palette_show_function_panel, "check");
+		add_member_control(this, "lock side panels", palette_lock_side_panels, "check",
+			"tooltip='freeze the colour and function panels in world space; the bottom panel keeps following'");
+		add_member_control(this, "follow dead zone", palette_follow_deadband_deg, "value_slider", "min=0;max=90;step=1;ticks=true",
+			"tooltip='head rotation that is ignored before the panels start following'");
+		add_member_control(this, "follow delay", palette_follow_time, "value_slider", "min=0.0;max=1.0;step=0.01;ticks=true",
+			"tooltip='time constant of the turn following filter, 0 follows instantly'");
 		align("\b");
 	}
 	if (begin_tree_node("Rendering", gui_rendering, gui_rendering)) {

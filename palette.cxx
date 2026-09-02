@@ -2,6 +2,7 @@
 #include "label_shader_manager.h"
 #include "util.h"
 #include <cgv/math/ftransform.h>
+#include <cgv/math/pose.h>
 #include "octree.h"
 
 namespace vrui {
@@ -22,7 +23,7 @@ namespace vrui {
 		point_cloud_style.screen_aligned = true;
 		point_cloud_style.point_size = 0.1;
 		point_cloud_style.measure_point_size_in_pixel = false;
-		p_icon_style.texture_mode = cgv::render::RTM_REPLACE;
+		p_icon_style.texture_mode = cgv::render::RTM_MULTIPLY_COLOR;
 		p_icon_style.blend_rectangles = true;
 		p_icon_style.pixel_blend = 1.0f;
 		p_icon_style.default_depth_offset = -1e-4f;
@@ -43,14 +44,17 @@ namespace vrui {
 		int id = palette_object_shapes.size();
 		palette_object_shapes.emplace_back(shape);
 		palette_object_positions.emplace_back(position);
+		palette_object_rotations.emplace_back(1.f, 0.f, 0.f, 0.f); //identity, overridden by set_object_placement
 		palette_object_colors.emplace_back(color);
 		palette_object_data.emplace_back(nullptr);
 		palette_object_visibility.emplace_back(true);
+		palette_object_panel.push_back(0);
 		palette_object_groups.push_back(pog);
 		palette_object_use_button_image.push_back(false);
 		palette_object_button_image_files.emplace_back("");
 		palette_object_button_textures.emplace_back("uint8[R,G,B,A]");
 		palette_object_button_texture_needs_upload.emplace_back(false);
+		palette_object_icon_tints.emplace_back(1.0f, 1.0f, 1.0f, 1.0f);
 		palette_text_label_ids.push_back(-1);
 		switch (pog) {
 		case POG_TOP_TOOLBAR:
@@ -119,6 +123,9 @@ namespace vrui {
 		vec3 picking_position_rhand = pnt;
 		dist = std::numeric_limits<float>::max();
 		for (int i = 0; i < palette_object_positions.size(); i++) {
+			// a hidden object (or one on a hidden panel) must not be pickable
+			if (!object_is_visible(i))
+				continue;
 			vec3 object_position = palette_pose * palette_object_positions[i].lift();
 			float cur_dist = (object_position - picking_position_rhand).length();
 			if (cur_dist < p_sphere_style.radius) {
@@ -272,9 +279,81 @@ namespace vrui {
 		palette_object_button_texture_needs_upload[id] = true;
 	}
 
+	void palette::set_object_icon_tint(int id, const cgv::rgba& tint)
+	{
+		if (id < 0 || id >= (int)palette_object_icon_tints.size())
+			return;
+		if (palette_object_icon_tints[id] == tint)
+			return;
+		palette_object_icon_tints[id] = tint;
+		set_palette_changed();
+	}
+
 	cgv::rgba& palette::object_color(const int id)
 	{
 		return palette_object_colors[id];
+	}
+
+	const cgv::vec3& palette::object_position(const int id) const
+	{
+		static const cgv::vec3 invalid_position(0.f);
+		if (!object_id_is_valid(id))
+			return invalid_position;
+		return palette_object_positions[id];
+	}
+
+	void palette::set_object_position(const int id, const cgv::vec3& position)
+	{
+		if (!object_id_is_valid(id))
+			return;
+		palette_object_positions[id] = position;
+		place_object_label(id);
+		set_palette_changed();
+	}
+
+	void palette::set_object_placement(const int id, const cgv::vec3& position, const cgv::quat& rotation)
+	{
+		if (!object_id_is_valid(id))
+			return;
+		palette_object_positions[id] = position;
+		palette_object_rotations[id] = rotation;
+		place_object_label(id);
+		set_palette_changed();
+	}
+
+	void palette::set_object_panel(const int id, const int panel)
+	{
+		if (!object_id_is_valid(id) || panel < 0 || panel >= max_panels)
+			return;
+		palette_object_panel[id] = panel;
+		set_palette_changed();
+	}
+
+	void palette::set_panel_visible(const int panel, const bool visible)
+	{
+		if (panel < 0 || panel >= max_panels || palette_panel_visible[panel] == visible)
+			return;
+		palette_panel_visible[panel] = visible;
+		// text labels are not covered by the render index rebuild, so drive them directly
+		for (size_t id = 0; id < palette_object_panel.size(); ++id) {
+			if (palette_object_panel[id] == panel)
+				refresh_object_label_visibility((int)id);
+		}
+		set_palette_changed();
+	}
+
+	bool palette::is_panel_visible(const int panel) const
+	{
+		if (panel < 0 || panel >= max_panels)
+			return false;
+		return palette_panel_visible[panel];
+	}
+
+	bool palette::object_is_visible(const int id) const
+	{
+		if (!object_id_is_valid(id))
+			return false;
+		return palette_object_visibility[id] && palette_panel_visible[palette_object_panel[id]];
 	}
 
 	cgv::render::point_render_style& palette::point_style()
@@ -353,32 +432,57 @@ namespace vrui {
 
 	//text labels
 
-	void palette::set_label_text(unsigned int obj_ix, std::string txt)
+	void palette::place_object_label(unsigned int obj_ix)
 	{
+		if (obj_ix >= palette_text_label_ids.size())
+			return;
+		const int li = palette_text_label_ids[obj_ix];
+		if (li < 0)
+			return;
+
 		//original = 0.05
 		static double constexpr step_width = 0.10;
-		
-		auto palette_label_offset = [&](const vec3& palette_object_position, const float& step_width) -> vec3 {
-			return palette_object_position + vec3(0.0, 0.7071068 * 0.5 * step_width, 0.7071068 * 0.5 * step_width);
-		};
+		static constexpr float label_scale = 0.2f;
 
-		quat delete_label_ori = quat(0.7071068, -0.7071068, 0, 0);
-		float delete_label_scale = 0.2f;
+		const cgv::quat& extra_rotation = palette_object_rotations[obj_ix];
 
+		// lift the label off its object, rotated the same way the object itself is rotated
+		vec3 offset(0.0f, (float)(0.7071068 * 0.5 * step_width), (float)(0.7071068 * 0.5 * step_width));
+		extra_rotation.rotate(offset);
+
+		const vec3 position = palette_object_positions[obj_ix] + offset;
+		const cgv::quat orientation = extra_rotation * label_base_orientation;
+
+		palette_text_labels.place_label(li, position, orientation, label_coord_system, LA_CENTER, label_scale);
+	}
+
+	void palette::set_label_coordinate_system(CoordinateSystem coord_system)
+	{
+		label_coord_system = coord_system;
+		refresh_label_placement();
+	}
+
+	void palette::refresh_label_placement()
+	{
+		for (unsigned i = 0; i < palette_text_label_ids.size(); ++i)
+			place_object_label(i);
+	}
+
+	void palette::set_label_text(unsigned int obj_ix, std::string txt)
+	{
 		auto& li = palette_text_label_ids[obj_ix];
 		if (li == -1) {
 			li = palette_text_labels.add_label(txt, cgv::rgba(0.5, 0.5, 0.5, 0.75));
 		}
 		else {
-			// update_label_text skips the rebuild when the text is unchanged; place_label below
-			// restores the placement that set_label would have reset anyway
+			// update_label_text skips the rebuild when the text is unchanged; place_object_label
+			// below restores the placement that set_label would have reset anyway
 			palette_text_labels.update_label_text(li, txt);
-			//palette_text_labels.update_label_text(li, name);
 		}
 
-		//palette_text_labels.place_label(li, palette_label_offset(palette_lefthand_object_positions[obj_ix], step_width), delete_label_ori, CS_LEFT_CONTROLLER, LA_LEFT, delete_label_scale);
-		palette_text_labels.place_label(li, palette_label_offset(palette_object_positions[obj_ix], step_width), delete_label_ori, CS_LEFT_CONTROLLER, LA_CENTER, delete_label_scale);
-		palette_text_labels.show_label(li);
+		place_object_label(obj_ix);
+		// never unconditionally show: the object or its whole panel may be hidden
+		refresh_object_label_visibility((int)obj_ix);
 	}
 
 	const std::string& palette::get_label_text(unsigned obj_ix)
@@ -406,7 +510,7 @@ namespace vrui {
 			palette_indices.clear();
 			palette_indices.resize(NUM_PALETTE_OBJECTS);
 			for (int i = 0; i < palette_object_shapes.size(); ++i) {
-				if (palette_object_visibility[i])
+				if (object_is_visible(i))
 					palette_indices[palette_object_shapes[i]].push_back(i);
 			}
 		}
@@ -430,9 +534,11 @@ namespace vrui {
 				palette_sphere_renderer.set_indices(ctx, sphere_indices);
 			}
 			//std::cout << "box_indices: " << box_indices.size() << std::endl;
-			quat object_rotation = object_tilt;
-			std::vector<quat> rotations = std::vector<quat>(palette_object_shapes.size(), object_rotation);
-			if (box_indices.size() > 0) {
+			// combine the shared tilt with the per object rotation so objects can sit on panels
+			// that are turned relative to the palette pose
+			std::vector<quat> rotations(palette_object_shapes.size(), object_tilt);
+			for (size_t oi = 0; oi < rotations.size(); ++oi)
+				rotations[oi] = palette_object_rotations[oi] * object_tilt;			if (box_indices.size() > 0) {
 				palette_box_renderer.set_render_style(p_box_style);
 				palette_box_renderer.set_position_array(ctx, palette_object_positions);
 				palette_box_renderer.set_rotation_array(ctx, rotations);
@@ -493,6 +599,10 @@ namespace vrui {
 			if (box_plane_indices.size() > 0) {
 				palette_box_plane_renderer.set_render_style(p_box_plane_style);
 				palette_box_plane_renderer.set_position_array(ctx, palette_object_positions);
+				// these buttons are flat slabs whose thin axis is the local y axis. Without a
+				// rotation they always lie flat in the palette pose, which only looks right for a
+				// horizontal tray; the per object rotation stands them up on the floating panels.
+				palette_box_plane_renderer.set_rotation_array(ctx, palette_object_rotations);
 				palette_box_plane_renderer.set_color_array(ctx, palette_object_colors);
 				palette_box_plane_renderer.set_indices(ctx, box_plane_indices);
 			}
@@ -535,7 +645,7 @@ namespace vrui {
 		// four single element attribute uploads that each button used to issue on its own.
 		icon_draw_list.clear();
 		for (int i = 0; i < (int)palette_object_positions.size(); ++i) {
-			if (!palette_object_visibility[i])
+			if (!object_is_visible(i))
 				continue;
 			if (i >= (int)palette_object_use_button_image.size() || !palette_object_use_button_image[i])
 				continue;
@@ -570,13 +680,19 @@ namespace vrui {
 			if (!tex_ptr)
 				continue;
 
-			icon_draw_list.emplace_back(tex_ptr, palette_object_positions[i] + icon_offset);
+			// the icon sits slightly in front of its button, along the buttons own up direction
+			vec3 offset = icon_offset;
+			palette_object_rotations[i].rotate(offset);
+			icon_draw_list.push_back({ tex_ptr,
+				palette_object_positions[i] + offset,
+				palette_object_rotations[i] * icon_rotation,
+				i < (int)palette_object_icon_tints.size() ? palette_object_icon_tints[i] : cgv::rgba(1.0f, 1.0f, 1.0f, 1.0f) });
 		}
 
 		if (!icon_draw_list.empty()) {
 			std::stable_sort(icon_draw_list.begin(), icon_draw_list.end(),
-				[](const std::pair<cgv::render::texture*, vec3>& a, const std::pair<cgv::render::texture*, vec3>& b) {
-					return a.first < b.first;
+				[](const icon_draw_entry& a, const icon_draw_entry& b) {
+					return a.tex < b.tex;
 				});
 
 			static const cgv::math::fvec<float, 2> icon_extent(0.030f, 0.030f);
@@ -586,21 +702,26 @@ namespace vrui {
 			size_t begin = 0;
 			while (begin < icon_draw_list.size()) {
 				size_t end = begin + 1;
-				while (end < icon_draw_list.size() && icon_draw_list[end].first == icon_draw_list[begin].first)
+				while (end < icon_draw_list.size() && icon_draw_list[end].tex == icon_draw_list[begin].tex)
 					++end;
 
 				const size_t count = end - begin;
 				icon_batch_positions.clear();
-				for (size_t k = begin; k < end; ++k)
-					icon_batch_positions.push_back(icon_draw_list[k].second);
-				icon_batch_rotations.assign(count, icon_rotation);
+				icon_batch_rotations.clear();
+				icon_batch_colors.clear();
+				for (size_t k = begin; k < end; ++k) {
+					icon_batch_positions.push_back(icon_draw_list[k].position);
+					icon_batch_rotations.push_back(icon_draw_list[k].rotation);
+					icon_batch_colors.push_back(icon_draw_list[k].tint);
+				}
 				icon_batch_extents.assign(count, icon_extent);
 				icon_batch_texcoords.assign(count, icon_texcoord);
 
-				cgv::render::texture* tex_ptr = icon_draw_list[begin].first;
+				cgv::render::texture* tex_ptr = icon_draw_list[begin].tex;
 				tex_ptr->enable(ctx, 0);
 				palette_icon_renderer.set_position_array(ctx, icon_batch_positions);
 				palette_icon_renderer.set_rotation_array(ctx, icon_batch_rotations);
+				palette_icon_renderer.set_color_array(ctx, icon_batch_colors);
 				palette_icon_renderer.set_extent_array(ctx, icon_batch_extents);
 				palette_icon_renderer.set_texcoord_array(ctx, icon_batch_texcoords);
 				palette_icon_renderer.render(ctx, 0, count);
@@ -620,8 +741,10 @@ namespace vrui {
 			cone_scratch_radii.clear();
 			cone_scratch_colors.clear();
 			for (auto& ci : cone_indices) {
+				vec3 axis(0.f, icon_size * 2.0f, 0.f);
+				palette_object_rotations[ci].rotate(axis);
 				vec3 base = palette_object_positions[ci];
-				vec3 tip = base + vec3(0, icon_size * 2.0f, 0);
+				vec3 tip = base + axis;
 				cone_scratch_positions.push_back(base);
 				cone_scratch_positions.push_back(tip);
 				cone_scratch_radii.push_back(icon_size * 0.5f);
@@ -645,9 +768,11 @@ namespace vrui {
 			cone_scratch_radii.clear();
 			cone_scratch_colors.clear();
 			for (auto& ci : cylinder_indices) {
+				vec3 axis(icon_size, 0.f, 0.f);
+				palette_object_rotations[ci].rotate(axis);
 				vec3 center = palette_object_positions[ci];
-				vec3 left = center - vec3(icon_size, 0, 0);
-				vec3 right = center + vec3(icon_size, 0, 0);
+				vec3 left = center - axis;
+				vec3 right = center + axis;
 				cone_scratch_positions.push_back(left);
 				cone_scratch_positions.push_back(right);
 				cone_scratch_radii.push_back(icon_size * 0.5f);

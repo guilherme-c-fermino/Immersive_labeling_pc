@@ -83,6 +83,19 @@ namespace vrui {
 			this->set_object_visibility(id, false);
 		}
 
+		// Panel toggles (pos 13-15): shown on their own small panel. Left switches the colour
+		// panel, middle locks both side panels in place, right switches the function button panel.
+		for (int c = 0; c < 3; ++c) {
+			toggle_ids[c] = this->add_object(shape,
+				cgv::vec3((first_placeholder_x + c) * step_width, 0.1, 1 * step_width),
+				placeholder_color, PaletteObjectGroup::POG_LEFT_TOOLBAR);
+		}
+		// Pos 16: one row further up (smaller z maps to higher on the upright panel), switches
+		// between the hand mounted palette and the floating panels.
+		toggle_ids[3] = this->add_object(shape,
+			cgv::vec3((first_placeholder_x + 1) * step_width, 0.1, 0 * step_width),
+			placeholder_color, PaletteObjectGroup::POG_LEFT_TOOLBAR);
+
 		set_top_toolbar_visibility(true);
 
 		// text for palette

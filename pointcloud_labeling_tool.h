@@ -44,6 +44,9 @@
 #include "point_cloud_clipboard.h"
 #include "controller_labels.h"
 
+#include <map>
+#include <string>
+
 #include <ann_tree.h>
 
 #include <string>
@@ -100,6 +103,8 @@ enum PalettePosition {
 	HEADON = 0,
 	RIGHTHAND = 1,
 	LEFTHAND = 2,
+	/// palette floats in front of the head: colours on the left of the view, function buttons on the right
+	HEAD_SIDES = 3,
 	NUM_OF_PALETTE_POSITIONS
 };
 
@@ -493,7 +498,87 @@ private:
 	pct::point_cloud_preparation_settings preparation_settings;
 
 	int interaction_mode = (int)InteractionMode::TELEPORT;
-	int palette_position = (int)PalettePosition::LEFTHAND;
+	int palette_position = (int)PalettePosition::HEAD_SIDES;
+	/// distance of the floating palette panels from the user [m]
+	float palette_head_distance = 0.45f;
+	/// height of the floating palette panels relative to the head anchor [m]
+	float palette_head_height = -0.10f;
+	/// angle of each panel away from the forward direction [deg]; left panel is placed at
+	/// +angle, the function button panel at -angle
+	float palette_panel_angle_deg = 60.0f;
+	/// additional drop of the bottom centre toggle panel relative to the side panels [m]
+	float palette_toggle_drop = -0.32f;
+	/// how much closer to the user the bottom centre toggle panel sits than the side panels [m]
+	float palette_toggle_pull = 0.05f;
+	/// how strongly each button is tilted around its own horizontal axis to face the headset
+	/// centre; 1 aims exactly at the anchor, 0 keeps every panel perfectly vertical
+	float palette_button_tilt = 1.0f;
+	/// time constant of the yaw follow filter [s]; 0 disables smoothing
+	float palette_follow_time = 0.25f;
+	/// the panels only start following once the head heading differs by more than this [deg];
+	/// inside the dead zone they stay put, beyond it they trail the head by exactly this angle
+	float palette_follow_deadband_deg = 60.0f;
+	/// visibility of the colour panel, driven by the left toggle button
+	bool palette_show_colour_panel = true;
+	/// visibility of the function button panel, driven by the right toggle button
+	bool palette_show_function_panel = true;
+	/// when true the two side panels stay where they are in world space; the bottom toggle
+	/// panel keeps following the user so the lock can be released again
+	bool palette_lock_side_panels = false;
+	/// anchor pose captured at the moment the side panels were locked
+	mat34 palette_locked_anchor;
+	/// ids and head anchor frame placement of the bottom toggle panel objects (panel 2); these
+	/// always follow the user, no matter the palette mode or the lock
+	std::vector<int> palette_follow_object_ids;
+	std::vector<vec3> palette_follow_object_pos;
+	std::vector<quat> palette_follow_object_rot;
+	/// last relative transform applied to the following objects, used to skip redundant updates
+	mat34 palette_last_follow_rel;
+	bool palette_last_follow_rel_valid = false;
+	/// yaw-only frame that always follows the user, independent of palette mode and lock
+	mat34 head_palette_anchor() const;
+	/// frame the main palette panels live in: the controller in hand modes, the head anchor
+	/// in the floating mode
+	mat34 live_palette_anchor() const;
+	/// re-place the bottom panel objects so they keep following the user in every mode
+	void update_panel_followers();
+	/// apply the panel toggles and the wrist activation gate to the colour and function panels;
+	/// the bottom toggle panel is always visible
+	void refresh_palette_panel_visibility();
+	/// cache of resolved button icon paths, keyed by the file name inside buttons_images/
+	std::map<std::string, std::string> button_icon_paths;
+	/// click feedback: until what time a button icon should stay darkened
+	std::map<int, std::chrono::steady_clock::time_point> palette_icon_flash_until;
+	float palette_icon_flash_duration = 0.2f;
+	/// locate a file in buttons_images/ and remember the result
+	const std::string& resolve_button_icon(const std::string& file_name);
+	/// update the palette icons that depend on a toggle state (CP parameter, palette lock and
+	/// palette mode buttons)
+	void refresh_dynamic_button_icons();
+	/// darken button icons according to persistent selections and short click flashes
+	void refresh_button_icon_tints();
+	/// darken one button icon for palette_icon_flash_duration seconds
+	void flash_button_icon(int id);
+	/// engage or release the side panel lock, capturing/restoring the frozen anchor
+	void apply_palette_lock();
+	/// switch the palette between the controller mounted tray and the floating panels
+	void set_palette_mode(int position);
+	/// split the palette into a colour panel (left) and a function button panel (right)
+	bool palette_split_panels = true;
+	/// palette object positions as produced by build(), used as the base for every re-layout
+	std::vector<vec3> palette_base_positions;
+	/// smoothed yaw the floating palette follows [rad]
+	float palette_follow_yaw = 0.f;
+	bool palette_follow_yaw_valid = false;
+	/// smoothed anchor position of the floating palette
+	vec3 palette_follow_position = vec3(0.f);
+	std::chrono::steady_clock::time_point palette_follow_last_update{};
+	/// advance the yaw follow filter; called once per frame from init_frame()
+	void update_palette_anchor();
+	/// pose used for both rendering and picking the palette; depends on palette_position
+	mat34 current_palette_pose() const;
+	/// re-applies the palette layout and label anchoring for the active palette_position
+	void apply_palette_layout();
 
 	// gui flags
 
@@ -502,6 +587,7 @@ private:
 	bool gui_menubar = false;
 	bool gui_clod_style = false;
 	bool gui_teleport = false;
+	bool gui_palette = false;
 
 	bool gui_scaling = false;
 	bool gui_marking = false;

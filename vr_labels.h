@@ -21,6 +21,8 @@ enum CoordinateSystem
 	CS_HEAD,
 	CS_LEFT_CONTROLLER,
 	CS_RIGHT_CONTROLLER,
+	/// arbitrary pose supplied by the application through set_custom_coordinate_system()
+	CS_CUSTOM,
 	NUM_COORDINATE_SYSTEMS
 };
 
@@ -62,6 +64,12 @@ public:
 	/// sets origins and orientation of the used coordinate systems based on given vr_view.
 	/// needs to be called again if the objects associated with these Coordinate systems moved since the last call (e.g a controller moved)
 	void update_coordinate_systems();
+
+	/// set the pose of CS_CUSTOM; cheap enough to call every frame since it does not touch any label
+	inline void set_custom_coordinate_system(const mat34& custom_pose) {
+		pose[CS_CUSTOM] = custom_pose;
+		custom_coord_system_valid = true;
+	}
 
 	void init(cgv::render::context& ctx);
 	void init_frame(cgv::render::context& ctx);
@@ -155,5 +163,6 @@ private:
 	// rendering
 	mat34 pose[NUM_COORDINATE_SYSTEMS];
 	bool valid[NUM_COORDINATE_SYSTEMS]; //
+	bool custom_coord_system_valid = false; //true once set_custom_coordinate_system() was called
 
 };

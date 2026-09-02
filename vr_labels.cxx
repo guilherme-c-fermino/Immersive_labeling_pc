@@ -88,6 +88,8 @@ void vr_labels::update_coordinate_systems()
 	valid[CS_RIGHT_CONTROLLER] = vr_view_ptr && vr_view_ptr->get_current_vr_state() && vr_view_ptr->get_current_vr_state()->controller[1].status == vr::VRS_TRACKED;
 	if (valid[CS_RIGHT_CONTROLLER])
 		pose[CS_RIGHT_CONTROLLER] = reinterpret_cast<const mat34&>(vr_view_ptr->get_current_vr_state()->controller[1].pose[0]);
+	// CS_CUSTOM is owned by the application, only its validity is tracked here
+	valid[CS_CUSTOM] = custom_coord_system_valid;
 }
 
 void vr_labels::init(cgv::render::context& ctx)
